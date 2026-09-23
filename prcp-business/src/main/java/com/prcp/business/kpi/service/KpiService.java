@@ -1,7 +1,9 @@
 package com.prcp.business.kpi.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.prcp.business.kpi.entity.KpiDefinition;
+import com.prcp.business.kpi.entity.KpiScheme;
 import com.prcp.business.kpi.entity.KpiScoreRule;
 import com.prcp.business.kpi.entity.KpiValue;
 import com.prcp.business.kpi.mapper.KpiMapper;
@@ -163,6 +165,54 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
 
     // ============ 辅助接口 ============
     public R<List<Map<String, Object>>> listKpiSchemes() { return R.ok(kpiMapper.listKpiSchemes()); }
+
+    public R<List<Map<String, Object>>> listAllKpiSchemes() {
+        QueryWrapper<KpiScheme> qw = new QueryWrapper<>();
+        qw.eq("is_deleted", 0).orderByDesc("id");
+        List<KpiScheme> list = kpiMapper.selectKpiSchemeList(qw);
+        return R.ok(list.stream().map(this::schemeToMap).collect(java.util.stream.Collectors.toList()));
+    }
+
+    public R<?> createScheme(KpiScheme s) {
+        if (s.getSchemeCode() == null || s.getSchemeCode().isEmpty())
+            throw BizException.badRequest("scheme_code 不能为空");
+        if (s.getSchemeName() == null || s.getSchemeName().isEmpty())
+            throw BizException.badRequest("scheme_name 不能为空");
+        s.setIsDeleted(0);
+        s.setStatus(s.getStatus() == null ? "ACTIVE" : s.getStatus());
+        if (s.getKpiCount() == null) s.setKpiCount(0);
+        boolean ok = kpiMapper.insertScheme(s) > 0;
+        return ok ? R.ok(schemeToMap(s)) : R.fail("创建失败");
+    }
+
+    public R<?> updateScheme(Long id, KpiScheme s) {
+        if (kpiMapper.selectKpiSchemeById(id) == null) throw BizException.notFound("方案不存在");
+        s.setId(id);
+        boolean ok = kpiMapper.updateKpiSchemeById(s) > 0;
+        return ok ? R.ok() : R.fail("更新失败");
+    }
+
+    public R<?> deleteScheme(Long id) {
+        KpiScheme upd = new KpiScheme();
+        upd.setId(id);
+        upd.setIsDeleted(1);
+        upd.setUpdatedAt(LocalDateTime.now());
+        boolean ok = kpiMapper.updateKpiSchemeById(upd) > 0;
+        return ok ? R.ok() : R.fail("删除失败");
+    }
+
+    /** Entity → Map（前端 camelCase） */
+    private java.util.Map<String, Object> schemeToMap(KpiScheme s) {
+        java.util.Map<String, Object> m = new java.util.HashMap<>();
+        m.put("id", s.getId());
+        m.put("schemeCode", s.getSchemeCode());
+        m.put("schemeName", s.getSchemeName());
+        m.put("description", s.getDescription());
+        m.put("kpiCount", s.getKpiCount());
+        m.put("status", s.getStatus());
+        m.put("createdAt", s.getCreatedAt());
+        return m;
+    }
 
     public R<List<Map<String, Object>>> listRptItems(Long rptId) {
         if (rptId == null) throw BizException.badRequest("rpt_id 不能为空");

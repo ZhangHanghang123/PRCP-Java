@@ -1,12 +1,17 @@
 package com.prcp.business.kpi.mapper;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.core.toolkit.Constants;
 import com.prcp.business.kpi.entity.KpiDefinition;
+import com.prcp.business.kpi.entity.KpiScheme;
 import com.prcp.business.kpi.entity.KpiScoreRule;
 import com.prcp.business.kpi.entity.KpiValue;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 import java.util.Map;
@@ -85,4 +90,35 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
         ORDER BY id
     """)
     List<Map<String, Object>> listKpiSchemes();
+
+    // ====== 方案 CRUD（注解版，无 XML） ======
+    @Select("SELECT * FROM prcp_kpi_scheme ${ew.customSqlSegment}")
+    List<KpiScheme> selectKpiSchemeList(@Param(Constants.WRAPPER) Wrapper<KpiScheme> wrapper);
+
+    @Select("SELECT * FROM prcp_kpi_scheme WHERE id = #{id} AND is_deleted = 0")
+    KpiScheme selectKpiSchemeById(@Param("id") Long id);
+
+    @Insert("""
+        INSERT INTO prcp_kpi_scheme (scheme_code, scheme_name, description, kpi_count, status, is_deleted, created_by, updated_by)
+        VALUES (#{schemeCode}, #{schemeName}, #{description}, #{kpiCount}, #{status}, 0, #{createdBy}, #{updatedBy})
+    """)
+    @org.apache.ibatis.annotations.Options(useGeneratedKeys = true, keyProperty = "id")
+    int insertScheme(KpiScheme s);
+
+    @Update("""
+        <script>
+        UPDATE prcp_kpi_scheme
+        <set>
+          <if test='schemeCode != null'>scheme_code = #{schemeCode},</if>
+          <if test='schemeName != null'>scheme_name = #{schemeName},</if>
+          <if test='description != null'>description = #{description},</if>
+          <if test='kpiCount != null'>kpi_count = #{kpiCount},</if>
+          <if test='status != null'>status = #{status},</if>
+          <if test='isDeleted != null'>is_deleted = #{isDeleted},</if>
+          updated_at = NOW()
+        </set>
+        WHERE id = #{id}
+        </script>
+    """)
+    int updateKpiSchemeById(KpiScheme s);
 }

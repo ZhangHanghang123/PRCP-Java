@@ -1,6 +1,7 @@
 package com.prcp.business.kpi.controller;
 
 import com.prcp.business.kpi.entity.KpiDefinition;
+import com.prcp.business.kpi.entity.KpiScheme;
 import com.prcp.business.kpi.entity.KpiScoreRule;
 import com.prcp.business.kpi.entity.KpiValue;
 import com.prcp.business.kpi.service.KpiService;
@@ -24,6 +25,22 @@ public class KpiController {
     public R<List<Map<String, Object>>> schemes() {
         return kpiService.listKpiSchemes();
     }
+
+    @GetMapping("/schemes/all")
+    public R<List<Map<String, Object>>> allSchemes() {
+        return kpiService.listAllKpiSchemes();
+    }
+
+    @PostMapping("/schemes")
+    public R<?> createScheme(@Valid @RequestBody KpiScheme s) { return kpiService.createScheme(s); }
+
+    @PutMapping("/schemes/{id}")
+    public R<?> updateScheme(@PathVariable Long id, @Valid @RequestBody KpiScheme s) {
+        return kpiService.updateScheme(id, s);
+    }
+
+    @DeleteMapping("/schemes/{id}")
+    public R<?> deleteScheme(@PathVariable Long id) { return kpiService.deleteScheme(id); }
 
     // ============ KPI 定义 ============
     @GetMapping("/definitions")
