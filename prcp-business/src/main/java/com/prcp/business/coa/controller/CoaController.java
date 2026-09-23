@@ -34,6 +34,12 @@ public class CoaController {
         return coaSchemeService.listActive();
     }
 
+    /** GET /coa/schemes/all — 列出所有方案（含 INACTIVE），供方案维护用 */
+    @GetMapping("/schemes/all")
+    public R<List<CoaScheme>> allSchemes() {
+        return coaSchemeService.listAll();
+    }
+
     /** GET /coa/scheme/{id} */
     @GetMapping("/scheme/{id}")
     public R<?> getScheme(@PathVariable Long id) {
@@ -91,3 +97,4 @@ public class CoaController {
         return coaNodeService.softDelete(id);
     }
 }
+

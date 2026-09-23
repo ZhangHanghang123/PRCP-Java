@@ -25,6 +25,13 @@ public class CoaSchemeService extends ServiceImpl<CoaSchemeMapper, CoaScheme> {
         return R.ok(coaSchemeMapper.selectList(qw));
     }
 
+    /** 列出所有未删除的方案（含 INACTIVE），供方案维护 Modal 用 */
+    public R<List<CoaScheme>> listAll() {
+        QueryWrapper<CoaScheme> qw = new QueryWrapper<>();
+        qw.eq("is_deleted", 0).orderByDesc("id");
+        return R.ok(coaSchemeMapper.selectList(qw));
+    }
+
     public R<?> getById(Long id) {
         CoaScheme scheme = coaSchemeMapper.selectById(id);
         if (scheme == null) throw BizException.notFound("方案不存在");
@@ -52,3 +59,4 @@ public class CoaSchemeService extends ServiceImpl<CoaSchemeMapper, CoaScheme> {
         return ok ? R.ok() : R.fail("删除失败");
     }
 }
+
