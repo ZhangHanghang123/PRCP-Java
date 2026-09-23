@@ -21,6 +21,7 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
 
     /** KPI 定义列表（连 scheme 和 report 名称） */
     @Select("""
+        <script>
         SELECT d.id, d.scheme_id AS schemeId, s.scheme_name AS schemeName,
                s.scheme_code AS schemeCode,
                d.indicator_type AS indicatorType,
@@ -34,7 +35,11 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
         LEFT JOIN prcp_kpi_scheme s ON s.id = d.scheme_id AND s.is_deleted = 0
         LEFT JOIN prcp_rpt_report r ON r.id = d.rpt_id
         WHERE d.is_deleted = 0
+          <if test='schemeId != null'>AND d.scheme_id = #{schemeId}</if>
+          <if test='kpiCode != null and kpiCode != ""'>AND d.kpi_code = #{kpiCode}</if>
+          <if test='keyword != null and keyword != ""'>AND (d.kpi_code LIKE CONCAT('%', #{keyword}, '%') OR d.kpi_name LIKE CONCAT('%', #{keyword}, '%'))</if>
         ORDER BY d.id DESC
+        </script>
     """)
     List<Map<String, Object>> listDefs(@Param("schemeId") Long schemeId,
                                         @Param("kpiCode") String kpiCode,
@@ -42,7 +47,9 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
 
     /** KPI 值列表 */
     @Select("""
+        <script>
         SELECT v.id, v.kpi_id AS kpiId, d.kpi_code AS kpiCode, d.kpi_name AS kpiName,
+               d.scheme_id AS schemeId,
                v.data_date AS dataDate, v.version,
                v.current_value AS currentValue, v.prev_value AS prevValue,
                v.prev_year_value AS prevYearValue, v.calc_source AS calcSource,
@@ -50,13 +57,19 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
         FROM prcp_kpi_value v
         JOIN prcp_kpi_definition d ON d.id = v.kpi_id AND d.is_deleted = 0
         WHERE v.is_deleted = 0
+          <if test='schemeId != null'>AND d.scheme_id = #{schemeId}</if>
+          <if test='kpiId != null'>AND v.kpi_id = #{kpiId}</if>
+          <if test='dataDate != null and dataDate != ""'>AND v.data_date = #{dataDate}</if>
         ORDER BY v.data_date DESC, v.id DESC
+        </script>
     """)
-    List<Map<String, Object>> listValues(@Param("kpiId") Long kpiId,
+    List<Map<String, Object>> listValues(@Param("schemeId") Long schemeId,
+                                           @Param("kpiId") Long kpiId,
                                            @Param("dataDate") String dataDate);
 
     /** 评分规则列表 */
     @Select("""
+        <script>
         SELECT r.id, r.scheme_id AS schemeId, s.scheme_name AS schemeName,
                r.kpi_id AS kpiId, d.kpi_code AS kpiCode, d.kpi_name AS kpiName,
                r.rule_name AS ruleName, r.calc_method AS calcMethod,
@@ -66,7 +79,10 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
         LEFT JOIN prcp_kpi_scheme s ON s.id = r.scheme_id AND s.is_deleted = 0
         LEFT JOIN prcp_kpi_definition d ON d.id = r.kpi_id AND d.is_deleted = 0
         WHERE r.is_deleted = 0
+          <if test='schemeId != null'>AND r.scheme_id = #{schemeId}</if>
+          <if test='kpiId != null'>AND r.kpi_id = #{kpiId}</if>
         ORDER BY r.id DESC
+        </script>
     """)
     List<Map<String, Object>> listScoreRules(@Param("schemeId") Long schemeId,
                                               @Param("kpiId") Long kpiId);

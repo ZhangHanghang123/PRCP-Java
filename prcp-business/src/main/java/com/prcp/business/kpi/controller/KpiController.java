@@ -63,9 +63,10 @@ public class KpiController {
 
     // ============ KPI 值 ============
     @GetMapping("/values")
-    public R<List<Map<String, Object>>> listValues(@RequestParam(required = false) Long kpi_id,
+    public R<List<Map<String, Object>>> listValues(@RequestParam(required = false) Long scheme_id,
+                                                     @RequestParam(required = false) Long kpi_id,
                                                      @RequestParam(required = false) String data_date) {
-        return kpiService.listValues(kpi_id, data_date);
+        return kpiService.listValues(scheme_id, kpi_id, data_date);
     }
 
     @PostMapping("/values")

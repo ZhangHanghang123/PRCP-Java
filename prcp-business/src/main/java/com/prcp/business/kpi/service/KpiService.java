@@ -63,8 +63,8 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
     }
 
     // ============ KPI 值 ============
-    public R<List<Map<String, Object>>> listValues(Long kpiId, String dataDate) {
-        return R.ok(kpiMapper.listValues(kpiId, dataDate));
+    public R<List<Map<String, Object>>> listValues(Long schemeId, Long kpiId, String dataDate) {
+        return R.ok(kpiMapper.listValues(schemeId, kpiId, dataDate));
     }
 
     public R<?> createValue(KpiValue v) {
