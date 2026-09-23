@@ -100,7 +100,7 @@ public class SysService {
     // ============== 角色 ==============
 
     public List<SysRole> listRoles() {
-        return roleMapper.selectList(new QueryWrapper<SysRole>().eq("is_deleted", 0).orderBy("id"));
+        return roleMapper.selectList(new QueryWrapper<SysRole>().eq("is_deleted", 0).orderByAsc("id"));
     }
 
     public SysRole createRole(String roleCode, String roleName, String description) {
