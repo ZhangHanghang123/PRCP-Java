@@ -1,6 +1,6 @@
 package com.prcp.business.sys.controller;
 
-import com.prcp.business.sys.entity.SysUser;
+import com.prcp.business.auth.entity.SysUser;
 import com.prcp.business.sys.entity.SysRole;
 import com.prcp.business.sys.entity.SysDict;
 import com.prcp.business.sys.entity.SysDictItem;

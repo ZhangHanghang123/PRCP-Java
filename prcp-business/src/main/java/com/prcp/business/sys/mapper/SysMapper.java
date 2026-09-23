@@ -1,10 +1,7 @@
 package com.prcp.business.sys.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.prcp.business.sys.entity.SysUser;
-import com.prcp.business.sys.entity.SysRole;
-import com.prcp.business.sys.entity.SysDict;
-import com.prcp.business.sys.entity.SysDictItem;
+import com.prcp.business.auth.entity.SysUser;
 import org.apache.ibatis.annotations.Mapper;
 
 @Mapper

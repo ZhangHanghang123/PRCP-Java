@@ -1,10 +1,10 @@
 package com.prcp.business.sys.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.prcp.business.sys.entity.SysUser;
 import com.prcp.business.sys.entity.SysRole;
 import com.prcp.business.sys.entity.SysDict;
 import com.prcp.business.sys.entity.SysDictItem;
+import com.prcp.business.auth.entity.SysUser;
 import com.prcp.business.sys.mapper.SysMapper;
 import com.prcp.business.sys.mapper.RoleMapper;
 import com.prcp.business.sys.mapper.DictMapper;
