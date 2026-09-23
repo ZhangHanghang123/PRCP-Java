@@ -16,7 +16,7 @@ public class ReverseMetricTableController {
     private final ReverseMetricTableService service;
 
     @GetMapping("")
-    public R<Map<String, Object>> query(@RequestParam(required = false, defaultValue = "2026") String schemeCode,
+    public R<Map<String, Object>> query(@RequestParam(required = false, defaultValue = "ZXCOA_V1") String schemeCode,
                                         @RequestParam(required = false) String metricCode,
                                         @RequestParam(required = false) String fromDate,
                                         @RequestParam(required = false) String toDate) {

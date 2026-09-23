@@ -27,7 +27,7 @@ public interface ReverseMetricTableMapper {
           mc.unit
         FROM prcp_metric_coefficient mc
         LEFT JOIN prcp_coa_node n ON n.id = mc.node_id AND n.is_deleted = 0
-        LEFT JOIN sys_dict d ON d.dict_type = 'PRCP_METRIC_TYPE' AND d.dict_key = mc.metric_code AND d.is_deleted = 0
+        LEFT JOIN sys_dict d ON d.dict_type = 'METRIC_TYPE' AND d.dict_key = mc.metric_code AND d.is_deleted = 0
         WHERE mc.is_deleted = 0
           AND (#{schemeCode} IS NULL OR mc.scheme_code = #{schemeCode})
           AND (#{metricCode} IS NULL OR mc.metric_code = #{metricCode})
@@ -43,6 +43,7 @@ public interface ReverseMetricTableMapper {
     @Select("SELECT DISTINCT scheme_code AS schemeCode FROM prcp_metric_coefficient WHERE is_deleted = 0 ORDER BY scheme_code")
     List<String> listSchemes();
 
-    @Select("SELECT dict_key AS metricCode, dict_label AS metricLabel FROM sys_dict WHERE is_deleted = 0 AND status='ACTIVE' AND dict_type='PRCP_METRIC_TYPE' ORDER BY sort_order")
+    @Select("SELECT dict_key AS metricCode, dict_label AS metricLabel FROM sys_dict WHERE is_deleted = 0 AND status='ACTIVE' AND dict_type='METRIC_TYPE' ORDER BY sort_order")
     List<Map<String, Object>> listMetrics();
 }
+

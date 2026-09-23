@@ -37,7 +37,7 @@ public interface MetricMapper extends BaseMapper<MetricCoefficient> {
         FROM prcp_metric_coefficient mc
         LEFT JOIN prcp_coa_node n ON n.id = mc.node_id AND n.is_deleted = 0
         LEFT JOIN prcp_coa_scheme s ON s.id = mc.scheme_id AND s.is_deleted = 0
-        LEFT JOIN sys_dict d ON d.dict_type = 'PRCP_METRIC_TYPE' AND d.dict_key = mc.metric_code AND d.is_deleted = 0
+        LEFT JOIN sys_dict d ON d.dict_type = 'METRIC_TYPE' AND d.dict_key = mc.metric_code AND d.is_deleted = 0
         WHERE mc.is_deleted = 0
           AND (#{schemeId} IS NULL OR mc.scheme_id = #{schemeId})
           AND (#{nodeCode} IS NULL OR mc.node_code = #{nodeCode})
@@ -66,8 +66,9 @@ public interface MetricMapper extends BaseMapper<MetricCoefficient> {
 
     @Select("""
         SELECT dict_key AS metricCode, dict_label AS metricLabel, color, sort_order AS sortOrder
-        FROM sys_dict WHERE is_deleted = 0 AND status = 'ACTIVE' AND dict_type = 'PRCP_METRIC_TYPE'
+        FROM sys_dict WHERE is_deleted = 0 AND status = 'ACTIVE' AND dict_type = 'METRIC_TYPE'
         ORDER BY sort_order
     """)
     List<Map<String, Object>> listMetricOptions();
 }
+
