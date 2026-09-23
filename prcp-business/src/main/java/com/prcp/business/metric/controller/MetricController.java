@@ -25,10 +25,15 @@ public class MetricController {
     }
 
     @GetMapping("/options")
-    public R<Map<String, Object>> options(@RequestParam(required = false) Long schemeId) {
+    public R<Map<String, Object>> options(@RequestParam(required = false) String schemeId) {
+        // 兼容 axios 把 null 序列化成 "null" 的情况
+        Long sid = null;
+        if (schemeId != null && !"null".equalsIgnoreCase(schemeId) && !schemeId.isEmpty()) {
+            try { sid = Long.parseLong(schemeId); } catch (NumberFormatException ignore) {}
+        }
         return R.ok(Map.of(
                 "schemes", metricService.listSchemeOptions(),
-                "nodes", metricService.listNodeOptions(schemeId),
+                "nodes", metricService.listNodeOptions(sid),
                 "metrics", metricService.listMetricOptions()
         ));
     }
