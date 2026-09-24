@@ -60,8 +60,7 @@ public interface BasicDataMapper {
         SELECT DISTINCT d.data_date AS d
         FROM prcp_data_basic d
         LEFT JOIN prcp_coa_node n ON n.id = d.coa_node_id
-        WHERE 1=1
-          <if test='schemeId != null'>AND n.scheme_id = #{schemeId}</if>
+        WHERE (#{schemeId} IS NULL OR n.scheme_id = #{schemeId})
         ORDER BY d DESC
         LIMIT 60
     """)
@@ -110,6 +109,5 @@ public interface BasicDataMapper {
                           @Param("values") List<Object> values);
 
     /** 物理删除 */
-    @Delete("DELETE FROM prcp_data_basic WHERE id = #{id}")
-    int deleteById(@Param("id") Long id);
+    void deleteById(@Param("id") Long id);
 }
