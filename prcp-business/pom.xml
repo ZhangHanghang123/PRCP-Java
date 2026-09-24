@@ -14,6 +14,15 @@
     <name>prcp-business</name>
     <description>PRCP 业务模块（账户册、指标、反算等）</description>
 
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+            </resource>
+        </resources>
+    </build>
+
     <dependencies>
         <dependency>
             <groupId>com.prcp</groupId>
@@ -38,3 +47,4 @@
         </dependency>
     </dependencies>
 </project>
+
