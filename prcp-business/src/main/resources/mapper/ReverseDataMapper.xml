@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.prcp.business.data.reverse.mapper.ReverseDataMapper">
+
+    <update id="updateByDynamic">
+        UPDATE prcp_data_reverse
+        SET ${columns}, updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <insert id="insertByDynamic">
+        INSERT INTO prcp_data_reverse (
+          record_id, scheme_code, run_id, coa_scheme_id,
+          data_date, date_offset, offset_unit,
+          coa_node_id, node_code, node_name, node_level, parent_code, is_leaf, category,
+          ${columns}
+        ) VALUES (
+          #{recordId}, #{schemeCode}, #{runId}, #{coaSchemeId},
+          #{dataDate}, #{dateOffset}, #{offsetUnit},
+          #{nodeId}, #{nodeCode}, #{nodeName}, #{nodeLevel}, #{parentCode}, #{isLeaf}, #{category},
+          #{values}
+        )
+    </insert>
+</mapper>
