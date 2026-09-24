@@ -49,7 +49,7 @@ public interface ReverseDataMapper {
     List<Map<String, Object>> schemeCodes();
 
     @Select("""
-        SELECT DISTINCT data_date AS d FROM prcp_data_reverse
+        SELECT DISTINCT CAST(data_date AS CHAR) AS d FROM prcp_data_reverse
         WHERE (#{schemeCode} IS NULL OR scheme_code = #{schemeCode})
         ORDER BY d DESC LIMIT 60
     """)

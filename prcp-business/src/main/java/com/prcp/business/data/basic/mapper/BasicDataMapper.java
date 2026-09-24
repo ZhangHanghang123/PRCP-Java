@@ -57,7 +57,7 @@ public interface BasicDataMapper {
 
     /** 可用日期 */
     @Select("""
-        SELECT DISTINCT d.data_date AS d
+        SELECT DISTINCT CAST(d.data_date AS CHAR) AS d
         FROM prcp_data_basic d
         LEFT JOIN prcp_coa_node n ON n.id = d.coa_node_id
         WHERE (#{schemeId} IS NULL OR n.scheme_id = #{schemeId})
@@ -87,8 +87,8 @@ public interface BasicDataMapper {
         WHERE 1=1
           <if test='schemeId != null'>AND n.scheme_id = #{schemeId}</if>
           <if test='dataDate != null and dataDate != ""'>AND d.data_date = #{dataDate}</if>
-        ORDER BY n.path, d.data_date DESC
-        LIMIT 500
+        ORDER BY d.data_date DESC, n.id
+        LIMIT 1000
         </script>
     """)
     List<Map<String, Object>> matrix(@Param("schemeId") Long schemeId,
