@@ -22,7 +22,11 @@ public class MetricService {
     private final MetricKpiMapper kpiMapper;
 
     public List<Map<String, Object>> query(Long schemeId, String nodeCode, String metricCode, String dataDate) {
-        return metricMapper.query(schemeId, nodeCode, metricCode, dataDate);
+        // 空串视为无过滤条件 → 传 null（MyBatis 预编译时 '' 无法转 DATE，会报 Incorrect DATE value: ''）
+        String nc = (nodeCode == null || nodeCode.isEmpty()) ? null : nodeCode;
+        String mc = (metricCode == null || metricCode.isEmpty()) ? null : metricCode;
+        String dd = (dataDate == null || dataDate.isEmpty()) ? null : dataDate;
+        return metricMapper.query(schemeId, nc, mc, dd);
     }
 
     public List<Map<String, Object>> listSchemeOptions() {

@@ -40,9 +40,9 @@ public interface MetricMapper extends BaseMapper<MetricCoefficient> {
         LEFT JOIN sys_dict d ON d.dict_type = 'METRIC_TYPE' AND d.dict_key = mc.metric_code AND d.is_deleted = 0
         WHERE mc.is_deleted = 0
           AND (#{schemeId} IS NULL OR mc.scheme_id = #{schemeId})
-          AND (#{nodeCode} IS NULL OR #{nodeCode} = '' OR mc.node_code = #{nodeCode})
-          AND (#{metricCode} IS NULL OR #{metricCode} = '' OR mc.metric_code = #{metricCode})
-          AND (#{dataDate} IS NULL OR #{dataDate} = '' OR mc.data_date = #{dataDate})
+          AND (#{nodeCode} IS NULL OR mc.node_code = #{nodeCode})
+          AND (#{metricCode} IS NULL OR mc.metric_code = #{metricCode})
+          AND (#{dataDate} IS NULL OR mc.data_date = #{dataDate})
         ORDER BY mc.scheme_code, mc.node_code, mc.metric_code, mc.data_date DESC
     """)
     List<Map<String, Object>> query(@Param("schemeId") Long schemeId,
