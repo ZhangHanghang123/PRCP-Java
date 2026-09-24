@@ -14,7 +14,16 @@ import org.springframework.boot.web.servlet.support.SpringBootServletInitializer
  */
 @SpringBootApplication(scanBasePackages = "com.prcp")
 @MapperScan({
-    "com.prcp.business.*.mapper",
+    "com.prcp.business.auth.mapper",
+    "com.prcp.business.coa.mapper",
+    "com.prcp.business.report.mapper",
+    "com.prcp.business.kpi.mapper",
+    "com.prcp.business.dashboard.mapper",
+    "com.prcp.business.reversemt.mapper",
+    "com.prcp.business.sys.mapper",
+    "com.prcp.business.metric.mapper",
+    "com.prcp.business.data.basic.mapper",
+    "com.prcp.business.data.reverse.mapper",
     "com.prcp.framework.**.mapper"
 })
 public class PrcpApplication extends SpringBootServletInitializer {
@@ -28,3 +37,4 @@ public class PrcpApplication extends SpringBootServletInitializer {
         return builder.sources(PrcpApplication.class);
     }
 }
+
