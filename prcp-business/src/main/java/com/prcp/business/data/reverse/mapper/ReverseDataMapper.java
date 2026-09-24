@@ -50,7 +50,7 @@ public interface ReverseDataMapper {
 
     @Select("""
         SELECT DISTINCT data_date AS d FROM prcp_data_reverse
-        <if test='schemeCode != null and schemeCode != ""'>WHERE scheme_code = #{schemeCode}</if>
+        WHERE (#{schemeCode} IS NULL OR scheme_code = #{schemeCode})
         ORDER BY d DESC LIMIT 60
     """)
     List<String> dates(@Param("schemeCode") String schemeCode);
