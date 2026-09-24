@@ -74,7 +74,7 @@ public interface BasicDataMapper {
     @Select("""
         <script>
         SELECT
-          d.coa_node_id AS coaNodeId, d.node_code AS nodeCode, d.node_name AS nodeName,
+          d.coa_node_id AS coaNodeId, n.node_code AS nodeCode, n.node_name AS nodeName,
           d.data_date AS dataDate, d.category, d.node_level AS nodeLevel,
           d.orig_m1 AS origM1, d.orig_m3 AS origM3, d.orig_m6 AS origM6,
           d.orig_m12 AS origM12,
