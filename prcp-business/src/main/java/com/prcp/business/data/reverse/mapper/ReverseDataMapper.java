@@ -60,7 +60,7 @@ public interface ReverseDataMapper {
         <script>
         SELECT
           record_id AS recordId, scheme_code AS schemeCode, run_id AS runId,
-          data_date AS dataDate, date_offset AS dateOffset, offset_unit AS offsetUnit,
+          CAST(data_date AS CHAR) AS dataDate, date_offset AS dateOffset, offset_unit AS offsetUnit,
           coa_node_id AS coaNodeId, node_code AS nodeCode, node_name AS nodeName,
           node_level AS nodeLevel, parent_code AS parentCode, is_leaf AS isLeaf, category,
           orig_m1 AS origM1, orig_m3 AS origM3, orig_m6 AS origM6,
