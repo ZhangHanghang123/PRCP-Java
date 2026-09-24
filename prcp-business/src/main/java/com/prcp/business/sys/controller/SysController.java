@@ -93,6 +93,24 @@ public class SysController {
         return R.ok(all.stream().map(SysDict::getDictType).distinct().sorted().collect(java.util.stream.Collectors.toList()));
     }
 
+    /** GET /dict/types/summary — 字典类别汇总 {dictType, count} 列表（按字母序） */
+    @GetMapping("/dict/types/summary")
+    public R<List<java.util.Map<String, Object>>> listDictTypeSummary() {
+        List<SysDict> all = sysService.listDicts(null);
+        java.util.Map<String, Long> cnt = all.stream()
+                .collect(java.util.stream.Collectors.groupingBy(SysDict::getDictType, java.util.stream.Collectors.counting()));
+        List<java.util.Map<String, Object>> result = cnt.entrySet().stream()
+                .sorted(java.util.Map.Entry.comparingByKey())
+                .map(e -> {
+                    java.util.Map<String, Object> m = new java.util.HashMap<>();
+                    m.put("dictType", e.getKey());
+                    m.put("count", e.getValue());
+                    return m;
+                })
+                .collect(java.util.stream.Collectors.toList());
+        return R.ok(result);
+    }
+
     @GetMapping("/dict/types/items")
     public R<List<SysDict>> listAllDictItems() {
         return R.ok(sysService.listDicts(null));
