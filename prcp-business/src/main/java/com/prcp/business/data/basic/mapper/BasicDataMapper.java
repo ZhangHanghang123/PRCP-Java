@@ -76,7 +76,6 @@ public interface BasicDataMapper {
         SELECT
           d.coa_node_id AS coaNodeId, d.node_code AS nodeCode, d.node_name AS nodeName,
           d.data_date AS dataDate, d.category, d.node_level AS nodeLevel,
-          -- 代表 8 个桶（orig_m1/m3/m6/m12/y10/y15/y20/y30）
           d.orig_m1 AS origM1, d.orig_m3 AS origM3, d.orig_m6 AS origM6,
           d.orig_m12 AS origM12,
           d.orig_y10 AS origY10, d.orig_y15 AS origY15, d.orig_y20 AS origY20, d.orig_y30 AS origY30,
