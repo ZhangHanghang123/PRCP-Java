@@ -67,13 +67,13 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
                                            @Param("kpiId") Long kpiId,
                                            @Param("dataDate") String dataDate);
 
-    /** 评分规则列表 */
+    /** 评分规则列表（返回 snake_case 字段名，对齐 Python 端 list_score_rules） */
     @Select("""
         <script>
-        SELECT r.id, r.scheme_id AS schemeId, s.scheme_name AS schemeName,
-               r.kpi_id AS kpiId, d.kpi_code AS kpiCode, d.kpi_name AS kpiName,
-               r.rule_name AS ruleName, r.calc_method AS calcMethod,
-               r.total_score AS totalScore, r.higher_is_better AS higherIsBetter,
+        SELECT r.id, r.scheme_id AS scheme_id, s.scheme_code, s.scheme_name,
+               r.kpi_id AS kpi_id, d.kpi_code, d.kpi_name,
+               r.rule_name, r.calc_method,
+               r.total_score, r.higher_is_better,
                r.description, r.status
         FROM prcp_kpi_score_rule r
         LEFT JOIN prcp_kpi_scheme s ON s.id = r.scheme_id AND s.is_deleted = 0
@@ -113,6 +113,9 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
 
     @Select("SELECT * FROM prcp_kpi_scheme WHERE id = #{id} AND is_deleted = 0")
     KpiScheme selectKpiSchemeById(@Param("id") Long id);
+
+    @Select("SELECT COUNT(*) FROM prcp_kpi_scheme WHERE id = #{id} AND is_deleted = 0")
+    int existsScheme(@Param("id") Long id);
 
     @Insert("""
         INSERT INTO prcp_kpi_scheme (scheme_code, scheme_name, description, kpi_count, status, is_deleted, created_by, updated_by)

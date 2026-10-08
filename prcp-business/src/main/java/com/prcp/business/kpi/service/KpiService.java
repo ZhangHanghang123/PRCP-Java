@@ -5,18 +5,23 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.prcp.business.kpi.entity.KpiDefinition;
 import com.prcp.business.kpi.entity.KpiScheme;
 import com.prcp.business.kpi.entity.KpiScoreRule;
+import com.prcp.business.kpi.entity.KpiScoreSegment;
 import com.prcp.business.kpi.entity.KpiValue;
 import com.prcp.business.kpi.mapper.KpiMapper;
 import com.prcp.business.kpi.mapper.KpiScoreRuleMapper;
+import com.prcp.business.kpi.mapper.KpiScoreSegmentMapper;
 import com.prcp.business.kpi.mapper.KpiValueMapper;
 import com.prcp.common.exception.BizException;
 import com.prcp.common.result.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -27,6 +32,7 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
     private final KpiMapper kpiMapper;
     private final KpiValueMapper kpiValueMapper;
     private final KpiScoreRuleMapper kpiScoreRuleMapper;
+    private final KpiScoreSegmentMapper kpiScoreSegmentMapper;
 
     // ============ KPI 定义 ============
     public R<List<Map<String, Object>>> listDefs(Long schemeId, String kpiCode, String keyword) {
@@ -151,7 +157,13 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         r.setIsDeleted(0);
         r.setStatus(r.getStatus() == null ? "ACTIVE" : r.getStatus());
         boolean ok = kpiScoreRuleMapper.insert(r) > 0;
-        return ok ? R.ok(r) : R.fail("创建失败");
+        if (!ok) return R.fail("创建失败");
+        Long newId = r.getId();
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("id", newId);
+        resp.put("message", "ok");
+        // segments 暂不在 create body 里（前端通过 update 带 segments），但保留接口位
+        return R.ok(resp);
     }
 
     public R<?> deleteScoreRule(Long id) {
@@ -161,6 +173,158 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         upd.setUpdatedAt(LocalDateTime.now());
         boolean ok = kpiScoreRuleMapper.updateById(upd) > 0;
         return ok ? R.ok() : R.fail("删除失败");
+    }
+
+    /**
+     * 更新评分规则（含 segments 整段替换）
+     * 对齐 Python routers/kpi.py update_score_rule：UPDATE 规则 → 软删旧 segments → 插入新 segments
+     * body 含 segments 数组时一并替换；不含时只更新主表
+     */
+    @Transactional
+    public R<?> updateScoreRule(Long id, KpiScoreRule r, Map<String, Object> body) {
+        if (id == null) throw BizException.badRequest("id 不能为空");
+        KpiScoreRule exist = kpiScoreRuleMapper.selectById(id);
+        if (exist == null || Integer.valueOf(1).equals(exist.getIsDeleted())) {
+            throw BizException.badRequest("规则不存在");
+        }
+        r.setId(id);
+        r.setIsDeleted(null);
+        r.setUpdatedAt(LocalDateTime.now());
+        boolean ok = kpiScoreRuleMapper.updateById(r) > 0;
+        if (!ok) return R.fail("更新失败");
+        int inserted = 0;
+        // 解析 body 中的 segments（整段替换）
+        Object segsObj = body == null ? null : body.get("segments");
+        if (segsObj instanceof List) {
+            kpiScoreSegmentMapper.softDeleteByRuleId(id);
+            for (Object o : (List<?>) segsObj) {
+                if (!(o instanceof Map)) continue;
+                Map<?, ?> sm = (Map<?, ?>) o;
+                KpiScoreSegment seg = new KpiScoreSegment();
+                seg.setRuleId(id);
+                seg.setSegOrder(sm.get("seg_order") == null ? 0 : ((Number) sm.get("seg_order")).intValue());
+                seg.setMinValue(sm.get("min_value") == null ? null : new java.math.BigDecimal(sm.get("min_value").toString()));
+                seg.setMaxValue(sm.get("max_value") == null ? null : new java.math.BigDecimal(sm.get("max_value").toString()));
+                seg.setScore(new java.math.BigDecimal(sm.get("score").toString()));
+                seg.setSegmentDesc(sm.get("segment_desc") == null ? null : sm.get("segment_desc").toString());
+                seg.setIsDeleted(0);
+                kpiScoreSegmentMapper.insert(seg);
+                inserted++;
+            }
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("id", id);
+        resp.put("message", "ok");
+        resp.put("segment_count", inserted);
+        return R.ok(resp);
+    }
+
+    /**
+     * 按规则 + 指标值算分（区间段匹配）
+     * 对齐 Python routers/kpi.py score_calc：按 seg_order 遍历 segments，落入 [min, max] 第一个段
+     *   - min_value / max_value 为 null 表示负无穷 / 正无穷
+     *   - 返回 {matched, value, score, matched_range, higher_is_better}
+     */
+    public R<Map<String, Object>> scoreCalc(Long ruleId, BigDecimal value) {
+        if (ruleId == null) throw BizException.badRequest("rule_id 不能为空");
+        if (value == null) throw BizException.badRequest("value 不能为空");
+        KpiScoreRule rule = kpiScoreRuleMapper.selectById(ruleId);
+        if (rule == null || Integer.valueOf(1).equals(rule.getIsDeleted())) {
+            throw BizException.badRequest("规则不存在");
+        }
+        List<KpiScoreSegment> segs = kpiScoreSegmentMapper.listByRuleId(ruleId);
+        KpiScoreSegment matched = null;
+        for (KpiScoreSegment s : segs) {
+            boolean inRange = true;
+            if (s.getMinValue() != null && value.compareTo(s.getMinValue()) < 0) inRange = false;
+            if (s.getMaxValue() != null && value.compareTo(s.getMaxValue()) > 0) inRange = false;
+            if (inRange) { matched = s; break; }
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("value", value);
+        resp.put("higher_is_better", rule.getHigherIsBetter());
+        if (matched == null) {
+            resp.put("matched", false);
+            resp.put("score", null);
+            resp.put("message", "所有区间均不匹配，请检查规则配置");
+            return R.ok(resp);
+        }
+        Map<String, Object> matchedRange = new LinkedHashMap<>();
+        matchedRange.put("min_value", matched.getMinValue());
+        matchedRange.put("max_value", matched.getMaxValue());
+        matchedRange.put("segment_desc", matched.getSegmentDesc());
+        resp.put("matched", true);
+        resp.put("score", matched.getScore());
+        resp.put("matched_range", matchedRange);
+        return R.ok(resp);
+    }
+
+    /**
+     * 列表（含 segments 子表数据，对齐 Python list_score_rules 行为 + 字段 snake_case）
+     */
+    public R<List<Map<String, Object>>> listScoreRulesWithSegments(Long schemeId, Long kpiId) {
+        List<Map<String, Object>> rules = kpiMapper.listScoreRules(schemeId, kpiId);
+        if (rules == null || rules.isEmpty()) return R.ok(new ArrayList<>());
+        List<Long> ruleIds = new ArrayList<>();
+        for (Map<String, Object> r : rules) {
+            Object rid = r.get("id");
+            if (rid != null) ruleIds.add(((Number) rid).longValue());
+        }
+        Map<Long, List<Map<String, Object>>> segMap = new LinkedHashMap<>();
+        for (Long rid : ruleIds) {
+            List<KpiScoreSegment> segs = kpiScoreSegmentMapper.listByRuleId(rid);
+            List<Map<String, Object>> segList = new ArrayList<>();
+            for (KpiScoreSegment s : segs) {
+                Map<String, Object> sm = new LinkedHashMap<>();
+                sm.put("id", s.getId());
+                sm.put("rule_id", s.getRuleId());
+                sm.put("seg_order", s.getSegOrder());
+                sm.put("min_value", s.getMinValue());
+                sm.put("max_value", s.getMaxValue());
+                sm.put("score", s.getScore());
+                sm.put("segment_desc", s.getSegmentDesc());
+                segList.add(sm);
+            }
+            segMap.put(rid, segList);
+        }
+        // 字段命名对齐 Python（snake_case）+ 同时输出 camelCase 别名（前端两种命名都能用）
+        List<Map<String, Object>> renamed = new ArrayList<>();
+        for (Map<String, Object> r : rules) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> e : r.entrySet()) m.put(e.getKey(), e.getValue());
+            // 兼容字段名（前端 camelCase 也直接可用）
+            if (m.containsKey("scheme_id"))   m.put("schemeId",       m.get("scheme_id"));
+            if (m.containsKey("scheme_code")) m.put("schemeCode",     m.get("scheme_code"));
+            if (m.containsKey("scheme_name")) m.put("schemeName",     m.get("scheme_name"));
+            if (m.containsKey("kpi_id"))      m.put("kpiId",          m.get("kpi_id"));
+            if (m.containsKey("kpi_code"))    m.put("kpiCode",        m.get("kpi_code"));
+            if (m.containsKey("kpi_name"))    m.put("kpiName",        m.get("kpi_name"));
+            if (m.containsKey("rule_name"))   m.put("ruleName",       m.get("rule_name"));
+            if (m.containsKey("calc_method")) m.put("calcMethod",     m.get("calc_method"));
+            if (m.containsKey("total_score")) m.put("totalScore",     m.get("total_score"));
+            if (m.containsKey("higher_is_better")) m.put("higherIsBetter", m.get("higher_is_better"));
+            // segments 子表也兼容
+            Object rid = m.get("id");
+            if (rid != null) {
+                List<Map<String, Object>> segs = segMap.get(((Number) rid).longValue());
+                if (segs != null) {
+                    List<Map<String, Object>> segsWithAlias = new ArrayList<>();
+                    for (Map<String, Object> s : segs) {
+                        Map<String, Object> sm = new LinkedHashMap<>();
+                        for (Map.Entry<String, Object> e : s.entrySet()) sm.put(e.getKey(), e.getValue());
+                        if (sm.containsKey("rule_id"))      sm.put("ruleId",      sm.get("rule_id"));
+                        if (sm.containsKey("seg_order"))    sm.put("segOrder",    sm.get("seg_order"));
+                        if (sm.containsKey("min_value"))    sm.put("minValue",    sm.get("min_value"));
+                        if (sm.containsKey("max_value"))    sm.put("maxValue",    sm.get("max_value"));
+                        if (sm.containsKey("segment_desc")) sm.put("segmentDesc", sm.get("segment_desc"));
+                        segsWithAlias.add(sm);
+                    }
+                    m.put("segments", segsWithAlias);
+                }
+            }
+            renamed.add(m);
+        }
+        return R.ok(renamed);
     }
 
     // ============ 辅助接口 ============
