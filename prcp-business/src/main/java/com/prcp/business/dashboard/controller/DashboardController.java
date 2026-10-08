@@ -30,4 +30,13 @@ public class DashboardController {
 
     @GetMapping("/top-kpis")
     public R<Map<String, Object>> topKpis() { return dashboardService.topKpis(); }
+
+    /** 反算驾驶舱（PRD 风格 9 KPI + 24 月趋势 + 大类分布） */
+    @GetMapping("/reverse-overview")
+    public R<Map<String, Object>> reverseOverview(
+            @RequestParam(required = false) String data_date,
+            @RequestParam(required = false) Long scheme_id,
+            @RequestParam(required = false) Long run_id) {
+        return dashboardService.reverseOverview(data_date);
+    }
 }

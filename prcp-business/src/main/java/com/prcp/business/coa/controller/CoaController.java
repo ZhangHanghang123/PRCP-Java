@@ -40,26 +40,26 @@ public class CoaController {
         return coaSchemeService.listAll();
     }
 
-    /** GET /coa/scheme/{id} */
-    @GetMapping("/scheme/{id}")
+    /** GET /coa/schemes/{id} */
+    @GetMapping("/schemes/{id}")
     public R<?> getScheme(@PathVariable Long id) {
         return coaSchemeService.getById(id);
     }
 
-    /** POST /coa/scheme */
-    @PostMapping("/scheme")
+    /** POST /coa/schemes */
+    @PostMapping("/schemes")
     public R<?> createScheme(@Valid @RequestBody CoaScheme scheme) {
         return coaSchemeService.create(scheme);
     }
 
-    /** PUT /coa/scheme/{id} */
-    @PutMapping("/scheme/{id}")
+    /** PUT /coa/schemes/{id} */
+    @PutMapping("/schemes/{id}")
     public R<?> updateScheme(@PathVariable Long id, @Valid @RequestBody CoaScheme scheme) {
         return coaSchemeService.update(id, scheme);
     }
 
-    /** DELETE /coa/scheme/{id} */
-    @DeleteMapping("/scheme/{id}")
+    /** DELETE /coa/schemes/{id} */
+    @DeleteMapping("/schemes/{id}")
     public R<?> deleteScheme(@PathVariable Long id) {
         return coaSchemeService.softDelete(id);
     }
@@ -78,21 +78,21 @@ public class CoaController {
         return coaNodeService.listTree(schemeId);
     }
 
-    /** POST /coa/node */
-    @PostMapping("/node")
+    /** POST /coa/nodes */
+    @PostMapping("/nodes")
     public R<?> createNode(@Valid @RequestBody CoaNode node) {
         log.info("[createNode] {}", node);
         return coaNodeService.create(node);
     }
 
-    /** PUT /coa/node/{id} */
-    @PutMapping("/node/{id}")
+    /** PUT /coa/nodes/{id} */
+    @PutMapping("/nodes/{id}")
     public R<?> updateNode(@PathVariable Long id, @Valid @RequestBody CoaNode node) {
         return coaNodeService.update(id, node);
     }
 
-    /** DELETE /coa/node/{id} */
-    @DeleteMapping("/node/{id}")
+    /** DELETE /coa/nodes/{id} */
+    @DeleteMapping("/nodes/{id}")
     public R<?> deleteNode(@PathVariable Long id) {
         return coaNodeService.softDelete(id);
     }

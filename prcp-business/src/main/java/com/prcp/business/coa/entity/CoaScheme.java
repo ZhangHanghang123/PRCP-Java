@@ -22,6 +22,7 @@ public class CoaScheme {
     private String schemeName;
     private String description;
     private String status;
+    private Integer nodeCount;
     private Integer isDeleted;
     private Long createdBy;
     private Long updatedBy;

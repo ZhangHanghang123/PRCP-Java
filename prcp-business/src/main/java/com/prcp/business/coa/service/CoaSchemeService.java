@@ -25,6 +25,13 @@ public class CoaSchemeService extends ServiceImpl<CoaSchemeMapper, CoaScheme> {
         return R.ok(coaSchemeMapper.selectList(qw));
     }
 
+    /** 判断方案是否 ACTIVE（sim 模块调用） */
+    public boolean isActive(Long id) {
+        if (id == null) return false;
+        CoaScheme s = coaSchemeMapper.selectById(id);
+        return s != null && Integer.valueOf(0).equals(s.getIsDeleted()) && "ACTIVE".equals(s.getStatus());
+    }
+
     /** 列出所有未删除的方案（含 INACTIVE），供方案维护 Modal 用 */
     public R<List<CoaScheme>> listAll() {
         QueryWrapper<CoaScheme> qw = new QueryWrapper<>();

@@ -2,19 +2,55 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.prcp.business.data.basic.mapper.BasicDataMapper">
 
+    <!--
+      动态 update：
+      setClause 形如 "orig_m1 = ?, rem_m1 = ?, ..."
+      updated_at 自动更新
+    -->
     <update id="updateByDynamic">
         UPDATE prcp_data_basic
-        SET ${columns}, updated_at = NOW()
+        SET ${setClause}, updated_at = NOW()
         WHERE id = #{id}
     </update>
 
+    <!--
+      动态 insert：
+      columns 形如 "orig_m1, rem_m1, orig_m2, rem_m2, ..."
+      values  为对应 ? 值列表（顺序与 columns 一一对应），通过 foreach 展开为 ? 占位符
+      节点元数据自动写入（node_code/name/level/parent_code/is_leaf/category）
+      4 元组 (data_date, coa_node_id, date_offset, offset_unit) 由调用方保证
+    -->
     <insert id="insertByDynamic">
-        INSERT INTO prcp_data_basic (data_date, coa_node_id, ${columns})
-        VALUES (#{dataDate}, #{nodeId}, #{values})
+        INSERT INTO prcp_data_basic (
+            data_date, coa_node_id, date_offset, offset_unit,
+            node_code, node_name, node_level, parent_code, is_leaf, category,
+            ${columns}, created_at, updated_at
+        ) VALUES (
+            #{dataDate}, #{nodeId}, #{dateOffset}, #{offsetUnit},
+            #{nodeCode}, #{nodeName}, #{nodeLevel}, #{parentCode}, #{isLeaf}, #{category},
+            <foreach collection="values" item="v" separator=",">
+                #{v}
+            </foreach>,
+            NOW(), NOW()
+        )
     </insert>
 
-    <delete id="deleteById">
-        DELETE FROM prcp_data_basic WHERE id = #{id}
-    </delete>
-</mapper>
+    <!-- 逻辑删除：is_deleted = 1 -->
+    <update id="softDeleteById">
+        UPDATE prcp_data_basic
+        SET is_deleted = 1, updated_at = NOW()
+        WHERE id = #{id}
+    </update>
 
+    <!-- 批量逻辑删除：is_deleted = 1，传入 ids 数组 -->
+    <update id="softDeleteByIds">
+        UPDATE prcp_data_basic
+        SET is_deleted = 1, updated_at = NOW()
+        WHERE id IN
+        <foreach collection="ids" item="i" open="(" separator="," close=")">
+            #{i}
+        </foreach>
+        AND is_deleted = 0
+    </update>
+
+</mapper>

@@ -102,4 +102,22 @@ public class CoaNodeService extends ServiceImpl<CoaNodeMapper, CoaNode> {
         boolean ok = updateById(upd);
         return ok ? R.ok() : R.fail("删除失败");
     }
+
+    /** 取节点 nodeCode（sim 模块调用） */
+    public String codeById(Long id) {
+        if (id == null) return null;
+        CoaNode n = coaNodeMapper.selectById(id);
+        return n == null ? null : n.getNodeCode();
+    }
+
+    /** 节点基础信息 + 最新一条余额（sim 模块对齐 Python node_info） */
+    public Map<String, Object> nodeWithLatestBalance(Long coaNodeId) {
+        if (coaNodeId == null) return null;
+        Map<String, Object> node = coaNodeMapper.nodeWithScheme(coaNodeId);
+        if (node == null) return null;
+        Map<String, Object> bal = coaNodeMapper.latestBalance(coaNodeId);
+        node.put("current_balance_date", bal == null ? null : bal.get("dataDate"));
+        node.put("current_balance_amount", bal == null ? 0.0 : bal.get("currentAmount"));
+        return node;
+    }
 }
