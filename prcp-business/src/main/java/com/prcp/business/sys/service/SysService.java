@@ -223,6 +223,19 @@ public class SysService {
         dictItemMapper.updateById(item);
     }
 
+    /** 修复 Python 端缺失的 PUT /dict-items/{iid} 端点 */
+    public SysDictItem updateDictItem(Long itemId, String itemName, String itemValue, Integer sortOrder, Integer status) {
+        SysDictItem item = dictItemMapper.selectById(itemId);
+        if (item == null) throw new BizException("字典项不存在");
+        if (itemName != null) item.setItemName(itemName);
+        if (itemValue != null) item.setItemValue(itemValue);
+        if (sortOrder != null) item.setSortOrder(sortOrder);
+        if (status != null) item.setStatus(status);
+        item.setUpdatedAt(java.time.LocalDateTime.now());
+        dictItemMapper.updateById(item);
+        return item;
+    }
+
     // ============== 工具 ==============
 
     private String sha256(String s) {

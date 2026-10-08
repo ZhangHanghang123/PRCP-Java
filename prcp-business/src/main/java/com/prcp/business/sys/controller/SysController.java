@@ -4,7 +4,10 @@ import com.prcp.business.auth.entity.SysUser;
 import com.prcp.business.sys.entity.SysRole;
 import com.prcp.business.sys.entity.SysDict;
 import com.prcp.business.sys.entity.SysDictItem;
+import com.prcp.business.sys.entity.SysOpLog;
+import com.prcp.business.sys.entity.SysLoginLog;
 import com.prcp.business.sys.service.SysService;
+import com.prcp.business.sys.service.AuditLogService;
 import com.prcp.common.result.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -22,6 +25,7 @@ import java.util.Map;
 public class SysController {
 
     private final SysService sysService;
+    private final AuditLogService auditLogService;
 
     // ====== 用户 ======
     @GetMapping("/admin/users")
@@ -180,5 +184,58 @@ public class SysController {
     public R<Void> deleteDictItem(@PathVariable Long itemId) {
         sysService.deleteDictItem(itemId);
         return R.ok();
+    }
+
+    /** 修复 Python 端缺失的 PUT 端点（之前只有 POST/DELETE） */
+    @PutMapping("/dict/items/{itemId}")
+    public R<SysDictItem> updateDictItem(@PathVariable Long itemId, @RequestBody Map<String, Object> body) {
+        Integer sortOrder = body.get("sort_order") == null ? null : ((Number) body.get("sort_order")).intValue();
+        Integer status = body.get("status") == null ? null : ((Number) body.get("status")).intValue();
+        return R.ok(sysService.updateDictItem(itemId,
+                (String) body.get("item_name"),
+                (String) body.get("item_value"),
+                sortOrder,
+                status));
+    }
+
+    // ====== 操作日志 sys_op_log ======
+    @GetMapping("/admin/audit-logs")
+    public R<Map<String, Object>> listOpLogs(@RequestParam(required = false) String module,
+                                              @RequestParam(required = false) String action,
+                                              @RequestParam(required = false) String username,
+                                              @RequestParam(required = false) String status,
+                                              @RequestParam(defaultValue = "1") int page,
+                                              @RequestParam(defaultValue = "20") int pageSize) {
+        return auditLogService.listOpLogs(module, action, username, status, page, Math.min(pageSize, 200));
+    }
+
+    /** 内部业务调用：记录操作日志 */
+    @PostMapping("/admin/audit-logs")
+    public R<Map<String, Object>> writeOpLog(@RequestBody SysOpLog log) {
+        Long id = auditLogService.writeOpLog(log);
+        return R.ok(Map.of("id", id, "ok", true));
+    }
+
+    // ====== 登录日志 sys_login_log ======
+    @GetMapping("/admin/login-logs")
+    public R<Map<String, Object>> listLoginLogs(@RequestParam(required = false) String username,
+                                                 @RequestParam(required = false) String action,
+                                                 @RequestParam(required = false) Integer success,
+                                                 @RequestParam(defaultValue = "1") int page,
+                                                 @RequestParam(defaultValue = "20") int pageSize) {
+        return auditLogService.listLoginLogs(username, action, success, page, Math.min(pageSize, 200));
+    }
+
+    /** 内部业务调用：记录登录日志 */
+    @PostMapping("/admin/login-logs")
+    public R<Map<String, Object>> writeLoginLog(@RequestBody SysLoginLog log) {
+        Long id = auditLogService.writeLoginLog(log);
+        return R.ok(Map.of("id", id, "ok", true));
+    }
+
+    // ====== Dashboard 统计 ======
+    @GetMapping("/admin/stats")
+    public R<Map<String, Object>> stats() {
+        return auditLogService.stats();
     }
 }
