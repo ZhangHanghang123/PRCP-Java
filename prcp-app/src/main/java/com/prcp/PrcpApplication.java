@@ -20,10 +20,22 @@ import org.springframework.boot.web.servlet.support.SpringBootServletInitializer
     "com.prcp.business.kpi.mapper",
     "com.prcp.business.dashboard.mapper",
     "com.prcp.business.reversemt.mapper",
+    "com.prcp.business.reverse.mapper",
     "com.prcp.business.sys.mapper",
     "com.prcp.business.metric.mapper",
     "com.prcp.business.data.basic.mapper",
     "com.prcp.business.data.reverse.mapper",
+    "com.prcp.business.rate.mapper",
+    "com.prcp.business.sim.mapper",
+    "com.prcp.business.model.mapper",
+    "com.prcp.business.esg.mapper",
+    "com.prcp.business.balance.mapper",
+    "com.prcp.business.params.cet1",
+    "com.prcp.business.params.lcr",
+    "com.prcp.business.params.nim",
+    "com.prcp.business.params.nsfr",
+    "com.prcp.business.params.roe",
+    "com.prcp.business.params.eve",
     "com.prcp.framework.**.mapper"
 })
 public class PrcpApplication extends SpringBootServletInitializer {
