@@ -54,4 +54,14 @@ public class MetricController {
         metricService.delete(id);
         return R.ok();
     }
+
+    /**
+     * Excel 批量导入（对齐 Python routers/metric_coefficient.py import_excel）
+     * POST /metric-coefficient/import (multipart/form-data, file=...)
+     * 返回 {ok, imported, skipped, errors:[{row, message}]}
+     */
+    @PostMapping("/import")
+    public R<Map<String, Object>> importExcel(@RequestParam("file") org.springframework.web.multipart.MultipartFile file) {
+        return R.ok(metricService.importExcel(file));
+    }
 }

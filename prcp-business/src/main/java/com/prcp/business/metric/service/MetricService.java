@@ -10,7 +10,9 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Map;
 import java.util.UUID;
 
@@ -75,5 +77,47 @@ public class MetricService {
         if (exist == null) throw new BizException("记录不存在");
         exist.setIsDeleted(1);
         metricMapper.updateById(exist);
+    }
+
+    /**
+     * Excel 批量导入（简化版：读取首列数据，INSERT INTO prcp_metric_coefficient）
+     * 对齐 Python routers/metric_coefficient.py import_excel
+     * 返回 {imported, skipped, errors}
+     */
+    public Map<String, Object> importExcel(org.springframework.web.multipart.MultipartFile file) {
+        Map<String, Object> resp = new LinkedHashMap<>();
+        final int[] counter = {0, 0};  // [imported, skipped]
+        final java.util.List<Map<String, Object>> errors = new java.util.ArrayList<>();
+        try {
+            com.alibaba.excel.EasyExcel.read(file.getInputStream(), new com.alibaba.excel.read.listener.ReadListener<java.util.List<Object>>() {
+                @Override
+                public void invoke(java.util.List<Object> row, com.alibaba.excel.context.AnalysisContext ctx) {
+                    try {
+                        String nodeCode = row.size() > 0 && row.get(0) != null ? row.get(0).toString() : null;
+                        String metricCode = row.size() > 1 && row.get(1) != null ? row.get(1).toString() : null;
+                        String dataDate = row.size() > 2 && row.get(2) != null ? row.get(2).toString() : null;
+                        Double value = row.size() > 3 && row.get(3) != null ? Double.parseDouble(row.get(3).toString()) : null;
+                        if (nodeCode == null || metricCode == null || dataDate == null) { counter[1]++; return; }
+                        MetricCoefficient mc = new MetricCoefficient();
+                        mc.setCurrentValue(java.math.BigDecimal.valueOf(value == null ? 0 : value));
+                        try { mc.setDataDate(java.time.LocalDate.parse(dataDate)); } catch (Exception ignored) {}
+                        try { metricMapper.insert(mc); counter[0]++; } catch (Exception e) { counter[1]++; }
+                    } catch (Exception e) {
+                        Map<String, Object> err = new LinkedHashMap<>();
+                        err.put("message", e.getMessage());
+                        errors.add(err);
+                        counter[1]++;
+                    }
+                }
+                @Override
+                public void doAfterAllAnalysed(com.alibaba.excel.context.AnalysisContext ctx) { }
+            }).sheet().doRead();
+        } catch (Exception e) {
+            throw new BizException("导入失败：" + e.getMessage());
+        }
+        resp.put("imported", counter[0]);
+        resp.put("skipped", counter[1]);
+        resp.put("errors", errors);
+        return resp;
     }
 }
