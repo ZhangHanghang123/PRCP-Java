@@ -18,9 +18,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -325,13 +327,19 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
     }
 
     /**
-     * <p>按规则 + 指标值算分 (区间段匹配)</p>
+     * <p>按规则 + 指标值算分 (PIECEWISE 区间匹配 / LINEAR 线性插值)</p>
      *
-     * <p>对齐 Python routers/kpi.py score_calc: 按 seg_order 遍历 segments, 落入 [min, max] 第一个段</p>
+     * <p>对齐 Python routers/kpi.py score_calc:
+     * <ul>
+     *   <li>PIECEWISE - 按 seg_order 遍历 segments, 落入 [min, max] 第一个段</li>
+     *   <li>LINEAR - 每个 segment 是一个锚点 (min_value=x, max_value=null), score=该点得分;
+     *                  段之间按 x 轴线性插值; 落在两端之外 clamp 到最近锚点分数</li>
+     * </ul>
+     * </p>
      *
      * @param ruleId 规则 ID (必填)
      * @param value  指标值 (必填)
-     * @return R.ok(Map) 含 matched/value/score/matched_range/higher_is_better; min/max_value 为 null 表示负无穷/正无穷
+     * @return R.ok(Map) 含 matched/value/score/matched_range/higher_is_better/calc_method; PIECEWISE 返回原段; LINEAR 返回 [x1,x2,y1,y2] 用于前端可视化插值
      */
     public R<Map<String, Object>> scoreCalc(Long ruleId, BigDecimal value) {
         if (ruleId == null) throw BizException.badRequest("rule_id 不能为空");
@@ -341,6 +349,30 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
             throw BizException.badRequest("规则不存在");
         }
         List<KpiScoreSegment> segs = kpiScoreSegmentMapper.listByRuleId(ruleId);
+        String calcMethod = rule.getCalcMethod() == null ? "PIECEWISE" : rule.getCalcMethod().toUpperCase();
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("value", value);
+        resp.put("higher_is_better", rule.getHigherIsBetter());
+        resp.put("calc_method", calcMethod);
+
+        if ("LINEAR".equals(calcMethod)) {
+            return R.ok(scoreCalcLinear(segs, value, rule, resp));
+        }
+        return R.ok(scoreCalcPiecewise(segs, value, rule, resp));
+    }
+
+    /**
+     * <p>PIECEWISE 区间段匹配: 遍历 segments, 取第一个落入 [min, max] 的段</p>
+     *
+     * @param segs 段列表 (按 seg_order 升序)
+     * @param value 指标值
+     * @param rule 规则
+     * @param resp 响应 Map (已含 value/higher_is_better/calc_method)
+     * @return 填充完毕的 resp
+     */
+    private Map<String, Object> scoreCalcPiecewise(List<KpiScoreSegment> segs, BigDecimal value,
+                                                   KpiScoreRule rule, Map<String, Object> resp) {
         KpiScoreSegment matched = null;
         for (KpiScoreSegment s : segs) {
             boolean inRange = true;
@@ -348,14 +380,11 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
             if (s.getMaxValue() != null && value.compareTo(s.getMaxValue()) > 0) inRange = false;
             if (inRange) { matched = s; break; }
         }
-        Map<String, Object> resp = new LinkedHashMap<>();
-        resp.put("value", value);
-        resp.put("higher_is_better", rule.getHigherIsBetter());
         if (matched == null) {
             resp.put("matched", false);
             resp.put("score", null);
             resp.put("message", "所有区间均不匹配，请检查规则配置");
-            return R.ok(resp);
+            return resp;
         }
         Map<String, Object> matchedRange = new LinkedHashMap<>();
         matchedRange.put("min_value", matched.getMinValue());
@@ -364,7 +393,101 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         resp.put("matched", true);
         resp.put("score", matched.getScore());
         resp.put("matched_range", matchedRange);
-        return R.ok(resp);
+        return resp;
+    }
+
+    /**
+     * <p>LINEAR 线性插值: 每 segment 是锚点 (min_value=x, max_value=null), score=该点得分</p>
+     *
+     * <p>算法:
+     * <ol>
+     *   <li>提取锚点 [(x, score)], x 取 min_value (若 null 则用 max_value)</li>
+     *   <li>按 x 升序排序</li>
+     *   <li>value ≤ 最小锚点 → clamp 到最小得分</li>
+     *   <li>value ≥ 最大锚点 → clamp 到最大得分</li>
+     *   <li>落在中间 → 在相邻两锚点间线性插值: y = y1 + (value-x1)/(x2-x1) * (y2-y1)</li>
+     * </ol>
+     * </p>
+     *
+     * @param segs 段列表 (作为锚点)
+     * @param value 指标值
+     * @param rule 规则
+     * @param resp 响应 Map (已含 value/higher_is_better/calc_method)
+     * @return 填充完毕的 resp, 含 matched_range = [x1, x2, y1, y2] 用于前端可视化
+     */
+    private Map<String, Object> scoreCalcLinear(List<KpiScoreSegment> segs, BigDecimal value,
+                                                KpiScoreRule rule, Map<String, Object> resp) {
+        // 1) 提取锚点
+        List<Map.Entry<BigDecimal, BigDecimal>> anchors = new ArrayList<>();
+        for (KpiScoreSegment s : segs) {
+            BigDecimal x = s.getMinValue() != null ? s.getMinValue() : s.getMaxValue();
+            if (x == null || s.getScore() == null) continue;
+            anchors.add(Map.entry(x, s.getScore()));
+        }
+        if (anchors.isEmpty()) {
+            resp.put("matched", false);
+            resp.put("score", null);
+            resp.put("message", "LINEAR 规则没有可用锚点，请检查 segments 配置");
+            return resp;
+        }
+        // 2) 按 x 升序
+        anchors.sort(Comparator.comparing(Map.Entry::getKey));
+
+        BigDecimal firstX = anchors.get(0).getKey();
+        BigDecimal lastX = anchors.get(anchors.size() - 1).getKey();
+        BigDecimal score;
+        BigDecimal matchedX1 = null, matchedX2 = null, matchedY1 = null, matchedY2 = null;
+
+        // 3) clamp 到最小
+        if (value.compareTo(firstX) <= 0) {
+            score = anchors.get(0).getValue();
+            matchedX1 = firstX;
+            matchedY1 = score;
+            matchedX2 = firstX;
+            matchedY2 = score;
+        }
+        // 4) clamp 到最大
+        else if (value.compareTo(lastX) >= 0) {
+            score = anchors.get(anchors.size() - 1).getValue();
+            matchedX1 = lastX;
+            matchedY1 = score;
+            matchedX2 = lastX;
+            matchedY2 = score;
+        }
+        // 5) 线性插值
+        else {
+            score = null;
+            for (int i = 0; i < anchors.size() - 1; i++) {
+                BigDecimal x1 = anchors.get(i).getKey();
+                BigDecimal y1 = anchors.get(i).getValue();
+                BigDecimal x2 = anchors.get(i + 1).getKey();
+                BigDecimal y2 = anchors.get(i + 1).getValue();
+                if (x1.compareTo(value) <= 0 && value.compareTo(x2) <= 0) {
+                    if (x1.compareTo(x2) == 0) {
+                        score = y1;
+                    } else {
+                        // t = (value - x1) / (x2 - x1)
+                        BigDecimal t = value.subtract(x1).divide(x2.subtract(x1), 8, RoundingMode.HALF_UP);
+                        score = y1.add(t.multiply(y2.subtract(y1))).setScale(4, RoundingMode.HALF_UP);
+                    }
+                    matchedX1 = x1; matchedY1 = y1;
+                    matchedX2 = x2; matchedY2 = y2;
+                    break;
+                }
+            }
+        }
+
+        resp.put("matched", score != null);
+        resp.put("score", score);
+        // 配套可视化字段: 命中的两个锚点
+        Map<String, Object> matchedRange = new LinkedHashMap<>();
+        matchedRange.put("x1", matchedX1);
+        matchedRange.put("y1", matchedY1);
+        matchedRange.put("x2", matchedX2);
+        matchedRange.put("y2", matchedY2);
+        resp.put("matched_range", matchedRange);
+        resp.put("anchor_count", anchors.size());
+        return resp;
     }
 
     /**
