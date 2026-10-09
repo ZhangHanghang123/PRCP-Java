@@ -2,6 +2,7 @@ package com.prcp.business.reverse;
 
 import com.prcp.common.exception.BizException;
 import com.prcp.common.result.R;
+import com.prcp.business.reverse.engine.ReverseEngineGateway;
 import com.prcp.business.reverse.entity.ReverseResult;
 import com.prcp.business.reverse.entity.ReverseRun;
 import com.prcp.business.reverse.entity.ReverseRunLog;
@@ -19,42 +20,39 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * <p>反算 Service: CRUD + 异步执行 + 启发式求解器</p>
+ * <p>反算 Service: CRUD + 异步引擎提交 + 引擎回调处理</p>
  *
  * <p>核心职责:
  * <ol>
  *   <li>方案 CRUD (snake_case/camelCase 双兼容)</li>
  *   <li>目标约束 CRUD (constraint_type: GE/LE/EQ)</li>
  *   <li>Run CRUD + 选项 (模型/KPI/Run 列表/日志/结果)</li>
- *   <li>异步执行 (CompletableFuture + ExecutorService 2 线程池)</li>
- *   <li>启发式求解器 (HEURISTIC: 按 KPI 类型调整 + 2% 增长趋势)</li>
+ *   <li>启动 Run 时通过 {@link ReverseEngineGateway} HTTP 提交独立引擎</li>
+ *   <li>接收引擎回调 {@link #handleEngineCallback(Long, Map)} 写结果 + 更新状态</li>
  * </ol>
  * </p>
  *
  * <p>关键约定:
  * <ul>
  *   <li>软删除: is_deleted=1, 不物理删除 (含级联 target/run)</li>
- *   <li>run 状态机: PENDING → RUNNING → SUCCESS/FAILED/CANCELLED</li>
+ *   <li>run 状态机: PENDING → RUNNING → (SUCCESS|FAILED|CANCELLED)</li>
  *   <li>run_log/result 表无 is_deleted 字段, 永久保留日志; result 删除时硬删</li>
- *   <li>算法: HEURISTIC (默认) + CVXPY_LP (简化版)</li>
- *   <li>求解指标: NIM 调整资产端, LCR 调整 HQLA, 平滑度 + KPI 偏差 = optimal_value</li>
- *   <li>线程池: Executors.newFixedThreadPool(2)</li>
+ *   <li>引擎: 已迁移到独立服务器, 通过 ReverseEngineGateway HTTP 提交, 异步回调</li>
+ *   <li>算法: HEURISTIC / DNN_NEURAL_NETWORK / CVXPY_QP / ANT_COLONY / NONLINEAR_SOLVER (引擎侧实现)</li>
+ *   <li>线程池: Executors.newFixedThreadPool(2) — 仅用于 HTTP 提交和回调</li>
  * </ul>
  * </p>
  *
@@ -72,6 +70,7 @@ public class ReverseService {
     private final ReverseRunLogMapper logMapper;
     private final ReverseResultMapper resultMapper;
     private final JdbcTemplate jdbc;
+    private final ReverseEngineGateway engineGateway;
 
     private static final ExecutorService EXEC = Executors.newFixedThreadPool(2);
 
@@ -473,7 +472,13 @@ public class ReverseService {
     }
 
     /**
-     * <p>启动异步 Run (PENDING → RUNNING, CompletableFuture 提交 EXEC 线程池)</p>
+     * <p>启动异步 Run (PENDING → RUNNING, 提交给独立引擎 HTTP 异步执行)</p>
+     *
+     * <p>本方法把第 1.1 节的 executeReverse() 拆成 HTTP 调用:
+     * 1. 标记 status='RUNNING'
+     * 2. 异步调 engineGateway.submit(rid, schemeId) 提交 4 段报文
+     * 3. 引擎受理后返回 ACK, 实际计算通过 POST /reverse/runs/{rid}/callback 回传
+     * 4. 提交失败时标记 status='FAILED' 并写日志</p>
      *
      * @param rid Run ID (必填)
      * @return R.ok(Map.of("id"/"status", "RUNNING")); 不存在时抛 notFound
@@ -484,7 +489,24 @@ public class ReverseService {
         if (run == null) throw BizException.notFound("run 不存在");
         // 标记 RUNNING（避免重复启动）
         jdbc.update("UPDATE prcp_reverse_run SET status='RUNNING', progress=0, start_at=NOW() WHERE id=? AND status='PENDING'", rid);
-        CompletableFuture.runAsync(() -> executeReverse(rid), EXEC);
+        Long schemeId = run.getSchemeId();
+        // 异步提交引擎
+        CompletableFuture.runAsync(() -> {
+            try {
+                writeLog(rid, "INFO", "开始组装 4 段报文并提交引擎...", 0);
+                Map<String, Object> ack = engineGateway.submit(rid, schemeId);
+                writeLog(rid, "INFO",
+                        "引擎已受理: engine_run_id=" + ack.get("engine_run_id")
+                      + " estimated=" + ack.get("estimated_seconds") + "s", 5);
+            } catch (Exception e) {
+                log.error("提交引擎失败 rid={}", rid, e);
+                try {
+                    jdbc.update("UPDATE prcp_reverse_run SET status='FAILED', end_at=NOW(), error_message=? WHERE id=?",
+                            e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), rid);
+                } catch (Exception ignored) { }
+                writeLog(rid, "ERROR", "提交引擎失败: " + e.getMessage(), 0);
+            }
+        }, EXEC);
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("id", rid);
         resp.put("status", "RUNNING");
@@ -492,214 +514,104 @@ public class ReverseService {
     }
 
     /**
-     * 反算主流程 — 对位 Python run_reverse()
+     * <p>处理引擎回调: 引擎完成反算后 POST /reverse/runs/{rid}/callback 调用本方法</p>
+     *
+     * <p>流程:
+     * <ol>
+     *   <li>校验 callback token (Authorization Bearer)</li>
+     *   <li>读取 body.status: SUCCESS/FAILED/CANCELLED</li>
+     *   <li>SUCCESS: 写 prcp_reverse_result + 更新 run.status='SUCCESS' + metrics + optimal_value</li>
+     *   <li>FAILED: 更新 run.status='FAILED' + error_message</li>
+     *   <li>CANCELLED: 更新 run.status='CANCELLED'</li>
+     * </ol>
+     * </p>
+     *
+     * @param rid  Run ID (路径参数)
+     * @param body 引擎回调报文 (§ 2.2 格式)
+     * @return R.ok({received: true})
      */
-    void executeReverse(Long rid) {
-        LocalDateTime startTs = LocalDateTime.now();
-        try {
-            writeLog(rid, "INFO", "反算开始...", 0);
-            // 1. 加载 run + scheme
-            List<Map<String, Object>> runs = jdbc.queryForList(
-                    "SELECT r.id, r.scheme_id AS schemeId, s.scheme_code AS schemeCode, s.scheme_name AS schemeName,"
-                  + " s.coa_scheme_id AS coaSchemeId, s.data_date AS dataDate, s.horizon_months AS horizonMonths, s.algorithm"
-                  + " FROM prcp_reverse_run r JOIN prcp_reverse_scheme s ON s.id=r.scheme_id"
-                  + " WHERE r.id=? AND r.is_deleted=0", rid);
-            if (runs.isEmpty()) { writeLog(rid, "ERROR", "run 不存在", 0); return; }
-            Map<String, Object> run = runs.get(0);
-            Long schemeId = ((Number) run.get("schemeId")).longValue();
-            String schemeCode = (String) run.get("schemeCode");
-            Long coaSchemeId = run.get("coaSchemeId") == null ? null : ((Number) run.get("coaSchemeId")).longValue();
-            LocalDate dataDate = run.get("dataDate") == null ? LocalDate.now() : LocalDate.parse(run.get("dataDate").toString());
-            int horizon = run.get("horizonMonths") == null ? 24 : ((Number) run.get("horizonMonths")).intValue();
-            String algorithm = (String) run.get("algorithm");
+    public R<Map<String, Object>> handleEngineCallback(Long rid, Map<String, Object> body) {
+        if (rid == null) throw BizException.badRequest("id 必填");
+        if (body == null) throw BizException.badRequest("body 必填");
+        ReverseRun run = runMapper.selectById(rid);
+        if (run == null) throw BizException.notFound("run 不存在");
 
-            // 2. 加载 targets
-            List<Map<String, Object>> targets = jdbc.queryForList(
-                    "SELECT id, kpi_id AS kpiId, kpi_code AS kpiCode, target_name AS targetName,"
-                  + " target_value AS targetValue, constraint_type AS constraintType, weight, horizon_month AS horizonMonth"
-                  + " FROM prcp_reverse_target WHERE scheme_id=? AND is_deleted=0 ORDER BY sort_order",
-                    schemeId);
-            writeLog(rid, "INFO", "加载 " + targets.size() + " 个目标约束", 12);
+        String status = (String) body.get("status");
+        Object durationObj = body.get("duration_sec");
+        Object optimalObj = body.get("optimal_value");
+        Object metricsObj = body.get("metrics");
+        Object errorMsg = body.get("error_message");
 
-            // 3. 加载账户册 + 余额（prcp_data_basic）
-            List<Map<String, Object>> balRows = coaSchemeId == null ? Collections.emptyList() : jdbc.queryForList(
-                    "SELECT b.coa_node_id AS nodeId, n.node_code AS nodeCode, n.node_name AS nodeName,"
-                  + " n.node_level AS nodeLevel, b.current_balance AS currentBalance, b.weighted_rate AS weightedRate"
-                  + " FROM prcp_data_basic b JOIN prcp_coa_node n ON n.id=b.coa_node_id"
-                  + " WHERE n.scheme_id=? AND b.data_date=? AND b.is_deleted=0 AND n.is_deleted=0"
-                  + " AND n.node_level <= 3 ORDER BY n.sort_order LIMIT 200",
-                    coaSchemeId, dataDate);
-            writeLog(rid, "INFO", "加载账户册数据：" + balRows.size() + " 个节点", 20);
+        Integer durationSec = null;
+        if (durationObj instanceof Number) durationSec = ((Number) durationObj).intValue();
+        String metricsJson = null;
+        if (metricsObj != null) {
+            if (metricsObj instanceof String) {
+                metricsJson = (String) metricsObj;
+            } else {
+                metricsJson = toJson(metricsObj);
+            }
+        }
+        String errMsg = errorMsg == null ? null : errorMsg.toString();
 
-            // 4. 求解（HEURISTIC + CVXPY 简化版）
-            writeLog(rid, "INFO", "开始求解（" + algorithm + "）...", 30);
-            BigDecimal[][] months = solve(balRows, targets, horizon);
-            writeLog(rid, "INFO", "求解完成", 70);
-
-            // 5. 计算 optimal_value + metrics
-            BigDecimal optVal = computeOptimal(months, balRows, targets);
-            Map<String, Object> metrics = buildMetrics(months, balRows, targets);
-            String metricsJson = toJson(metrics);
-
-            // 6. 写结果
-            writeLog(rid, "INFO", "保存反算结果...", 80);
-            saveResults(rid, balRows, months, dataDate);
-
-            // 7. 标记完成
-            LocalDateTime endTs = LocalDateTime.now();
+        if ("SUCCESS".equalsIgnoreCase(status)) {
+            // 1. 写 prcp_reverse_result (从 body.results 解析)
+            Object resultsObj = body.get("results");
+            if (resultsObj instanceof List) {
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> items = (List<Map<String, Object>>) resultsObj;
+                int inserted = 0;
+                for (Map<String, Object> item : items) {
+                    try {
+                        ReverseResult res = new ReverseResult();
+                        res.setRunId(rid);
+                        res.setPredictMonth(item.get("predict_month") == null ? null
+                                : ((Number) item.get("predict_month")).intValue());
+                        res.setPredictDate(item.get("predict_date") == null ? null
+                                : java.time.LocalDate.parse(item.get("predict_date").toString().substring(0, 10)));
+                        res.setRptItemCode((String) item.get("rpt_item_code"));
+                        res.setCurrentValue(toBD(item.get("current_value")));
+                        res.setAdjustedValue(toBD(item.get("adjusted_value")));
+                        BigDecimal cur = toBD(item.get("current_value"));
+                        BigDecimal adj = toBD(item.get("adjusted_value"));
+                        res.setDeltaValue(adj == null ? null
+                                : (cur == null ? adj : adj.subtract(cur)));
+                        res.setIsDeleted(0);
+                        res.setCreatedAt(LocalDateTime.now());
+                        resultMapper.insert(res);
+                        inserted++;
+                    } catch (Exception ex) {
+                        log.warn("写 result 失败 rid={} item={}: {}", rid, item, ex.getMessage());
+                    }
+                }
+                writeLog(rid, "INFO", "已写入 " + inserted + " 条 result", 95);
+            }
+            // 2. 更新 run
             jdbc.update("UPDATE prcp_reverse_run SET status='SUCCESS', progress=100, end_at=NOW(),"
                       + " duration_sec=?, optimal_value=?, metrics=?, error_message=NULL WHERE id=?",
-                    ChronoUnit.SECONDS.between(startTs, endTs), optVal, metricsJson, rid);
-            writeLog(rid, "INFO", "反算完成：optimal=" + optVal.setScale(4, RoundingMode.HALF_UP), 100);
-        } catch (Exception e) {
-            log.error("反算失败 rid={}", rid, e);
-            try {
-                jdbc.update("UPDATE prcp_reverse_run SET status='FAILED', end_at=NOW(), error_message=? WHERE id=?",
-                        e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), rid);
-            } catch (Exception ignored) { }
-            writeLog(rid, "ERROR", "反算失败：" + e.getMessage(), 0);
+                    durationSec, optimalObj, metricsJson, rid);
+            writeLog(rid, "INFO",
+                    "引擎回调 SUCCESS: optimal=" + optimalObj + " duration=" + durationSec + "s", 100);
+        } else if ("FAILED".equalsIgnoreCase(status)) {
+            jdbc.update("UPDATE prcp_reverse_run SET status='FAILED', end_at=NOW(), error_message=? WHERE id=?",
+                    errMsg, rid);
+            writeLog(rid, "ERROR", "引擎回调 FAILED: " + errMsg, 0);
+        } else if ("CANCELLED".equalsIgnoreCase(status)) {
+            jdbc.update("UPDATE prcp_reverse_run SET status='CANCELLED', end_at=NOW() WHERE id=?", rid);
+            writeLog(rid, "WARN", "引擎回调 CANCELLED", 0);
+        } else {
+            log.warn("引擎回调未知 status={} rid={}", status, rid);
         }
+        return R.ok(Collections.singletonMap("received", true));
     }
 
     /**
-     * 求解器：HEURISTIC（基于 Python _solve_qp 简化版）
-     * - NIM 约束 → 增加资产端（对公一般贷款 / 信用卡）调整
-     * - LCR 约束 → 增加优质流动性资产（国债 / 现金）调整
-     * - 平滑度评估 = sum(2阶差分²)
+     * 反算主流程 — 已废弃, 现改用 {@link ReverseEngineGateway#submit(Long, Long)} HTTP 提交
+     * 独立引擎服务器; 实际计算完成后引擎回调 {@link #handleEngineCallback(Long, Map)} 写结果。
      */
-    private BigDecimal[][] solve(List<Map<String, Object>> nodes, List<Map<String, Object>> targets, int T) {
-        int N = nodes.size();
-        if (N == 0) return new BigDecimal[T][0];
-        BigDecimal[][] init = new BigDecimal[T][N];
-        // 初始化：每月=current
-        for (int t = 0; t < T; t++) {
-            for (int n = 0; n < N; n++) {
-                BigDecimal cur = toBD(nodes.get(n).get("currentBalance"));
-                init[t][n] = cur == null ? BigDecimal.ZERO : cur;
-            }
-        }
-        // 按 KPI 类型调整（演示规则）
-        for (Map<String, Object> tgt : targets) {
-            String code = tgt.get("kpiCode") == null ? "" : tgt.get("kpiCode").toString();
-            if (code.contains("NIM")) {
-                for (int n = 0; n < N; n++) {
-                    String name = nodes.get(n).get("nodeName") == null ? "" : nodes.get(n).get("nodeName").toString();
-                    if (name.contains("对公一般贷款") || name.contains("信用卡")) {
-                        for (int t = 0; t < T; t++) {
-                            BigDecimal adj = BigDecimal.valueOf(1 + 0.005 * (t + 1));
-                            init[t][n] = init[t][n].multiply(adj);
-                        }
-                    }
-                }
-            } else if (code.contains("LCR")) {
-                for (int n = 0; n < N; n++) {
-                    String name = nodes.get(n).get("nodeName") == null ? "" : nodes.get(n).get("nodeName").toString();
-                    if (name.contains("国债") || name.contains("现金")) {
-                        for (int t = 0; t < T; t++) {
-                            BigDecimal adj = BigDecimal.valueOf(1 + 0.008 * (t + 1));
-                            init[t][n] = init[t][n].multiply(adj);
-                        }
-                    }
-                }
-            }
-        }
-        // CVXPY_LP / HEURISTIC 兜底：2% 增长趋势外推
-        String algo = "HEURISTIC";
-        if ("HEURISTIC".equals(algo)) {
-            for (int t = 0; t < T; t++) {
-                BigDecimal grow = BigDecimal.valueOf(1 + 0.002 * t);
-                for (int n = 0; n < N; n++) {
-                    init[t][n] = init[t][n].multiply(grow);
-                }
-            }
-        }
-        return init;
-    }
-
-    private BigDecimal computeOptimal(BigDecimal[][] months, List<Map<String, Object>> nodes, List<Map<String, Object>> targets) {
-        // 平滑度 + KPI 偏差
-        BigDecimal smooth = BigDecimal.ZERO;
-        int T = months.length;
-        for (int t = 2; t < T; t++) {
-            for (int n = 0; n < months[t].length; n++) {
-                BigDecimal diff2 = months[t][n].subtract(months[t-1][n].multiply(BigDecimal.valueOf(2))).add(months[t-2][n]);
-                smooth = smooth.add(diff2.multiply(diff2));
-            }
-        }
-        Random r = new Random(45);
-        BigDecimal kpiPenalty = BigDecimal.ZERO;
-        for (Map<String, Object> tgt : targets) {
-            BigDecimal tv = toBD(tgt.get("targetValue"));
-            BigDecimal actual;
-            String code = tgt.get("kpiCode") == null ? "" : tgt.get("kpiCode").toString();
-            if (code.contains("NIM")) actual = BigDecimal.valueOf(2.5 + 0.1 * r.nextDouble());
-            else if (code.contains("LCR")) actual = BigDecimal.valueOf(130 + 5 * r.nextDouble());
-            else actual = tv == null ? BigDecimal.ZERO : tv.multiply(BigDecimal.valueOf(0.95 + 0.1 * r.nextDouble()));
-            BigDecimal w = toBD(tgt.get("weight"));
-            if (w == null) w = BigDecimal.ONE;
-            BigDecimal adjust;
-            String ctype = tgt.get("constraintType") == null ? "GE" : tgt.get("constraintType").toString();
-            if ("GE".equals(ctype)) adjust = tv.subtract(actual).max(BigDecimal.ZERO).multiply(w);
-            else if ("LE".equals(ctype)) adjust = actual.subtract(tv).max(BigDecimal.ZERO).multiply(w);
-            else adjust = tv.subtract(actual).abs().multiply(w);
-            kpiPenalty = kpiPenalty.add(adjust);
-        }
-        return smooth.add(kpiPenalty.multiply(BigDecimal.TEN)).setScale(4, RoundingMode.HALF_UP);
-    }
-
-    private Map<String, Object> buildMetrics(BigDecimal[][] months, List<Map<String, Object>> nodes, List<Map<String, Object>> targets) {
-        Map<String, Object> metrics = new LinkedHashMap<>();
-        Map<String, Object> kpiActual = new LinkedHashMap<>();
-        Random r1 = new Random(42), r2 = new Random(43), r3 = new Random(44);
-        for (Map<String, Object> tgt : targets) {
-            String code = tgt.get("kpiCode") == null ? "?" : tgt.get("kpiCode").toString();
-            BigDecimal tv = toBD(tgt.get("targetValue"));
-            BigDecimal actual;
-            if (code.contains("NIM")) actual = BigDecimal.valueOf(2.5 + 0.1 * r1.nextDouble());
-            else if (code.contains("LCR")) actual = BigDecimal.valueOf(130 + 5 * r2.nextDouble());
-            else actual = tv == null ? BigDecimal.ZERO : tv.multiply(BigDecimal.valueOf(0.95 + 0.1 * r3.nextDouble()));
-            BigDecimal w = toBD(tgt.get("weight"));
-            if (w == null) w = BigDecimal.ONE;
-            String ctype = tgt.get("constraintType") == null ? "GE" : tgt.get("constraintType").toString();
-            BigDecimal adjust;
-            if ("GE".equals(ctype)) adjust = tv.subtract(actual).max(BigDecimal.ZERO).multiply(w);
-            else if ("LE".equals(ctype)) adjust = actual.subtract(tv).max(BigDecimal.ZERO).multiply(w);
-            else adjust = tv.subtract(actual).abs().multiply(w);
-            Map<String, Object> k = new LinkedHashMap<>();
-            k.put("target", tv);
-            k.put("actual", actual.setScale(4, RoundingMode.HALF_UP));
-            k.put("constraint", ctype);
-            k.put("weight", w);
-            k.put("adjust", adjust.setScale(4, RoundingMode.HALF_UP));
-            kpiActual.put(code, k);
-        }
-        metrics.put("kpi_actual", kpiActual);
-        metrics.put("status", "optimal");
-        metrics.put("n_nodes", nodes.size());
-        metrics.put("n_months", months.length);
-        return metrics;
-    }
-
-    private void saveResults(Long rid, List<Map<String, Object>> nodes, BigDecimal[][] months, LocalDate baseDate) {
-        int T = months.length;
-        for (int t = 0; t < T; t++) {
-            LocalDate predictDate = baseDate.plusMonths(t);
-            for (int n = 0; n < nodes.size(); n++) {
-                Map<String, Object> node = nodes.get(n);
-                ReverseResult res = new ReverseResult();
-                res.setRunId(rid);
-                res.setPredictMonth(t + 1);
-                res.setPredictDate(predictDate);
-                res.setRptItemId(((Number) node.get("nodeId")).longValue());
-                res.setRptItemCode((String) node.get("nodeCode"));
-                res.setCurrentValue(toBD(node.get("currentBalance")));
-                res.setAdjustedValue(months[t][n]);
-                res.setDeltaValue(months[t][n].subtract(res.getCurrentValue() == null ? BigDecimal.ZERO : res.getCurrentValue()));
-                res.setIsDeleted(0);
-                res.setCreatedAt(LocalDateTime.now());
-                resultMapper.insert(res);
-            }
-        }
+    @Deprecated
+    void executeReverse(Long rid) {
+        writeLog(rid, "WARN", "executeReverse 已废弃, 请使用 ReverseEngineGateway 提交", 0);
     }
 
     private void writeLog(Long rid, String level, String msg, int progress) {
@@ -719,14 +631,16 @@ public class ReverseService {
         try { return new BigDecimal(o.toString()); } catch (Exception e) { return null; }
     }
 
-    private static String toJson(Map<String, Object> map) {
+    private static String toJson(Object obj) {
         // 极简 JSON 序列化（不引入依赖；使用 Spring 的 Jackson 也可）
+        if (obj == null) return null;
         try {
             com.fasterxml.jackson.databind.ObjectMapper m = new com.fasterxml.jackson.databind.ObjectMapper();
             m.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
             m.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-            return m.writeValueAsString(map);
+            return m.writeValueAsString(obj);
         } catch (Exception e) {
+            log.warn("toJson 失败: {}", e.getMessage());
             return "{}";
         }
     }

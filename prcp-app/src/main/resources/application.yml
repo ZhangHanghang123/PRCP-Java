@@ -59,6 +59,14 @@ prcp:
     secret: prcp-secret-key-2026
     expiration-hours: 24
 
+# 独立反算引擎服务器配置 (对位 docs/api/reverse-engine-api.md)
+# 主服务组装 4 段报文后 HTTP 提交到 engine.base-url, 引擎异步计算完成后再 POST callback 回来
+engine:
+  base-url:          ${ENGINE_BASE_URL:http://localhost:8009}                    # 引擎服务地址
+  callback-base-url: ${ENGINE_CALLBACK_BASE_URL:http://localhost:8008/prcp-java/api}  # 主服务暴露给引擎回调的 URL
+  callback-token:    ${ENGINE_CALLBACK_TOKEN:dev-engine-callback-token}         # 双向 Bearer Token
+  timeout-sec:       ${ENGINE_TIMEOUT_SEC:60}                                   # 引擎接收 + 主服务等回调的总超时
+
 logging:
   level:
     root: INFO

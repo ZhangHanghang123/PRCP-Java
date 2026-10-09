@@ -333,6 +333,30 @@ public class ReverseController {
     }
 
     /**
+     * <p>引擎回调接收端点 (对位 docs/api/reverse-engine-api.md § 2.2)</p>
+     *
+     * <p>独立引擎服务器完成反算后, 通过 callback.url 主动 POST 本端点回传结果。
+     * 由 {@link com.prcp.business.reverse.ReverseService#handleEngineCallback} 写结果 + 更新 run 状态。</p>
+     *
+     * <pre>
+     * POST /reverse/runs/{rid}/callback
+     * Body: {run_id, engine_run_id, status, duration_sec, optimal_value,
+     *        metrics, results: [...], error_message}
+     *
+     * Response: R.ok({received: true})
+     * </pre>
+     *
+     * @param rid  Run ID (路径参数)
+     * @param body 引擎回调报文
+     * @return R.ok({received: true})
+     */
+    @PostMapping("/runs/{rid}/callback")
+    public R<Map<String, Object>> runCallback(@PathVariable Long rid,
+                                                @RequestBody Map<String, Object> body) {
+        return svc.handleEngineCallback(rid, body);
+    }
+
+    /**
      * <p>软删运行</p>
      *
      * <pre>
