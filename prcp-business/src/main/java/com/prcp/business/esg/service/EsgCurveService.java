@@ -13,8 +13,32 @@ import java.time.LocalDate;
 import java.util.*;
 
 /**
- * ESG Svensson 曲线 CRUD + 单日还原（6 端点：list/sources/get/upsert/bulk/rates）
- * 对齐 Python routers/esg.py curves 相关端点
+ * <p>ESG Svensson 曲线 CRUD + 单日还原 (6 端点: list/sources/get/upsert/bulk/rates)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>曲线列表 (分页 + source/日期过滤)</li>
+ *   <li>按 source 分组汇总</li>
+ *   <li>按 (curve_date, source) 取曲线参数</li>
+ *   <li>单条 upsert (校验 lambda1/lambda2 > 0)</li>
+ *   <li>批量 upsert (失败明细)</li>
+ *   <li>Svensson 还原利率 (按 tenor 月份)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>Svensson 参数: theta0/theta1/theta2/theta3 + lambda1/lambda2</li>
+ *   <li>校验: lambda1 > 0 且 lambda2 > 0</li>
+ *   <li>默认 source: CUSTOM (缺省填值)</li>
+ *   <li>利率单位: 还原结果同时输出 percent (%) 和 decimal (小数) 两种</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.esg.mapper.EsgCurvePointMapper
+ * @see com.prcp.business.esg.entity.EsgCurvePoint
  */
 @Slf4j
 @Service
@@ -23,7 +47,16 @@ public class EsgCurveService {
 
     private final EsgCurvePointMapper mapper;
 
-    // ============ list_curves（分页 + 过滤）============
+    /**
+     * <p>曲线列表 (分页 + source/日期过滤)</p>
+     *
+     * @param source    数据源 (可选)
+     * @param startDate 起始日期 yyyy-MM-dd (可选)
+     * @param endDate   结束日期 yyyy-MM-dd (可选)
+     * @param page      页码 (从 1 开始)
+     * @param pageSize  每页条数
+     * @return R.ok(Map.of("items"/"total"/"page"/"pageSize", ...))
+     */
     public R<Map<String, Object>> listCurves(String source, String startDate, String endDate,
                                               int page, int pageSize) {
         int offset = (page - 1) * pageSize;
@@ -37,7 +70,11 @@ public class EsgCurveService {
         return R.ok(resp);
     }
 
-    // ============ curve_sources ============
+    /**
+     * <p>按 source 分组汇总 (用于下拉选项)</p>
+     *
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> curveSources() {
         List<Map<String, Object>> items = mapper.groupBySource();
         Map<String, Object> resp = new LinkedHashMap<>();
@@ -45,7 +82,13 @@ public class EsgCurveService {
         return R.ok(resp);
     }
 
-    // ============ get_curve（按 curve_date + source）============
+    /**
+     * <p>按 (curve_date, source) 取曲线参数列表</p>
+     *
+     * @param curveDate 曲线日期 yyyy-MM-dd (必填)
+     * @param source    数据源 (可选)
+     * @return R.ok(Map.of("items", list)); 未找到时抛 badRequest
+     */
     public R<Map<String, Object>> getCurve(String curveDate, String source) {
         List<Map<String, Object>> items = mapper.selectByDateAndSource(curveDate, emptyToNull(source));
         if (items == null || items.isEmpty()) throw BizException.badRequest("curve_date=" + curveDate + " 未找到");
@@ -54,7 +97,12 @@ public class EsgCurveService {
         return R.ok(resp);
     }
 
-    // ============ upsert_curve（单条）============
+    /**
+     * <p>单条曲线 upsert (校验 lambda1>0 且 lambda2>0)</p>
+     *
+     * @param body 含 curve_date/source/theta0..theta3/lambda1/lambda2/raw_data_json/description
+     * @return R.ok(Map.of("id"/"curveDate"/"source"/"ok", true))
+     */
     public R<Map<String, Object>> upsertCurve(Map<String, Object> body) {
         String cd = toStr(firstNonNull(body.get("curveDate"), body.get("curve_date")));
         if (cd == null) throw BizException.badRequest("curve_date 必填");
@@ -93,7 +141,12 @@ public class EsgCurveService {
         return R.ok(resp);
     }
 
-    // ============ bulk_upsert ============
+    /**
+     * <p>批量 upsert (逐条调 upsertCurve, 失败明细返回)</p>
+     *
+     * @param points 曲线参数列表 (每条同 upsertCurve body)
+     * @return R.ok(Map.of("success"/"failed"/"failDetails", ...))
+     */
     public R<Map<String, Object>> bulkUpsert(List<Map<String, Object>> points) {
         if (points == null || points.isEmpty()) throw BizException.badRequest("points 不能为空");
         int nSuccess = 0;
@@ -114,7 +167,15 @@ public class EsgCurveService {
         return R.ok(resp);
     }
 
-    // ============ svensson_rates（单日还原利率）============
+    /**
+     * <p>Svensson 还原利率 (按 tenor 月份数组)</p>
+     *
+     * <p>每个 source 各还原一次; 同时输出 percent (%) 和 decimal 两种</p>
+     *
+     * @param curveDate 曲线日期 yyyy-MM-dd (必填)
+     * @param body      含 source (可选) + tenors (月数列表, 必填)
+     * @return R.ok(Map.of("items", list)), 每项含 source/curveDate/tenorsMonths/ratesPct/ratesDecimal
+     */
     public R<Map<String, Object>> svenssonRates(String curveDate, Map<String, Object> body) {
         String src = toStr(body.get("source"));
         Object tenorsObj = body.get("tenors");
@@ -158,7 +219,14 @@ public class EsgCurveService {
 
     // ============ 工具 ============
 
-    /** 加载某方案的曲线点列表（fit-pca 用，按 curve_date ASC） */
+    /**
+     * <p>加载某方案的曲线点列表 (fit-pca 用, 按 curve_date ASC)</p>
+     *
+     * @param source    数据源 (可选)
+     * @param startDate 起始日期 yyyy-MM-dd (可选)
+     * @param endDate   结束日期 yyyy-MM-dd (可选)
+     * @return 曲线点 Map 列表
+     */
     public List<Map<String, Object>> rangePoints(String source, String startDate, String endDate) {
         return mapper.rangePoints(source, startDate, endDate);
     }

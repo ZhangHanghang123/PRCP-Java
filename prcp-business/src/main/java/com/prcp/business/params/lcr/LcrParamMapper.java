@@ -9,15 +9,33 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * LCR 参数补录 Mapper
- * <p>对位 Python app/routers/lcr_param.py</p>
+ * <p>Mapper: prcp_lcr_param 表的 SQL 访问层</p>
+ *
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>query(...) - 列表查询 (JOIN prcp_coa_scheme 取 scheme_name)</li>
+ *   <li>listOptionsRaw - 下拉选项 (UNION ALL: schemes/nodes/operators/data_dates)</li>
+ *   <li>nodeNameById - 按 node_id 查节点名称 (新增时自动补全)</li>
+ * </ul>
+ * </p>
+ *
+ * <p>对位 Python app/routers/lcr_param.py, 默认过滤 is_deleted=0。</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Mapper
 public interface LcrParamMapper extends BaseMapper<LcrParamEntity> {
 
     /**
-     * 列表查询（JOIN prcp_coa_scheme 取 scheme_name）
-     * <p>对应 Python GET /lcr-param/，默认过滤 is_deleted=0</p>
+     * <p>列表查询 (JOIN prcp_coa_scheme 取 scheme_name)</p>
+     * <p>对应 Python GET /lcr-param/, 默认过滤 is_deleted=0</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param nodeId   节点 ID (可选)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @param keyword  模糊搜索关键字 (节点编码/名称/规则说明)
+     * @return 行 Map 列表, 按 data_date DESC 排序, 最多 5000 条
      */
     @Select("""
         SELECT p.id,
@@ -57,8 +75,15 @@ public interface LcrParamMapper extends BaseMapper<LcrParamEntity> {
                                     @Param("keyword") String keyword);
 
     /**
-     * 下拉选项：账户册方案 + 该方案下的节点 + LCR_OPERATOR 字典 + 已有数据日期
-     * <p>对应 Python GET /lcr-param/options</p>
+     * <p>下拉选项: UNION ALL 一把取齐 4 类 (对应 Python GET /lcr-param/options)</p>
+     * <ul>
+     *   <li>bucket='schemes' - 账户册方案 ACTIVE</li>
+     *   <li>bucket='nodes' - 全部 ACTIVE 节点</li>
+     *   <li>bucket='operators' - LCR_OPERATOR 字典</li>
+     *   <li>bucket='data_dates' - 已存在补录日期 (近 60 条)</li>
+     * </ul>
+     *
+     * @return 统一字段格式的合并结果, 用 bucket 区分类型
      */
     @Select("""
         SELECT 'schemes'  AS bucket, id, scheme_code AS code, scheme_name AS name,
@@ -97,7 +122,10 @@ public interface LcrParamMapper extends BaseMapper<LcrParamEntity> {
     List<Map<String, Object>> listOptionsRaw();
 
     /**
-     * 取节点名称（用于创建时自动补 node_name）
+     * <p>按 node_id 取节点名称 (创建时自动补 node_name)</p>
+     *
+     * @param nodeId 节点 ID
+     * @return node_name 字符串, 不存在返回 null
      */
     @Select("""
         SELECT node_name FROM prcp_coa_node

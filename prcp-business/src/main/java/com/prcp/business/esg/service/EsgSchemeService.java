@@ -13,12 +13,33 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 
 /**
- * ESG 方案 CRUD 服务（7 端点）
- * 对齐 Python routers/esg.py: list_schemes/create/get/update/delete/clone
+ * <p>ESG 方案 CRUD Service (7 端点: list/create/get/update/delete/clone)</p>
  *
- * JSON 字段：maturities_json / initial_yields_json
- *   - 列表查询时反序列化为 List<Integer/Double>
- *   - 写库时序列化为 JSON 字符串
+ * <p>核心职责:
+ * <ol>
+ *   <li>方案列表 (分页 + 关键字/状态过滤)</li>
+ *   <li>创建方案 (校验 n_factors/n_scenarios/n_steps 边界)</li>
+ *   <li>查询方案 (JSON 反序列化为 List)</li>
+ *   <li>更新方案 (按字段选择性更新)</li>
+ *   <li>软删除方案</li>
+ *   <li>克隆方案 (改 scheme_code/name + status=DRAFT)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>JSON 字段: maturities_json (List&lt;Integer&gt;) / initial_yields_json (List&lt;Double&gt;)</li>
+ *   <li>列表查询时反序列化为 List, 写库时序列化为 JSON 字符串</li>
+ *   <li>边界: n_factors=1~6, n_scenarios=10~10000, n_steps=12~360</li>
+ *   <li>schemeCode 唯一, 长度 ≥ 3</li>
+ *   <li>软删除: is_deleted=1</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.esg.mapper.EsgSchemeMapper
+ * @see com.prcp.business.esg.entity.EsgScheme
  */
 @Slf4j
 @Service
@@ -28,7 +49,15 @@ public class EsgSchemeService {
     private final EsgSchemeMapper schemeMapper;
     private final ObjectMapper om = new ObjectMapper();
 
-    // ============ list_schemes ============
+    /**
+     * <p>方案列表 (分页 + 关键字/状态过滤)</p>
+     *
+     * @param keyword  关键字 (匹配 scheme_code/name, 可选)
+     * @param status   状态 (DRAFT/READY/..., 可选)
+     * @param page     页码 (从 1 开始)
+     * @param pageSize 每页条数
+     * @return R.ok(Map.of("items"/"total"/"page"/"pageSize", ...)); JSON 字段已反序列化
+     */
     public R<Map<String, Object>> listSchemes(String keyword, String status, int page, int pageSize) {
         keyword = emptyToNull(keyword);
         status = emptyToNull(status);
@@ -47,7 +76,12 @@ public class EsgSchemeService {
         return R.ok(resp);
     }
 
-    // ============ create_scheme ============
+    /**
+     * <p>创建方案 (校验 n_factors/n_scenarios/n_steps 边界, schemeCode 唯一)</p>
+     *
+     * @param body 含 schemeCode/schemeName/dataSource/startDate/endDate/nFactors/nScenarios/nSteps/seed/status/maturitiesMonths/initialYieldsPct
+     * @return R.ok(Map.of("id"/"schemeCode"/"schemeName"/"ok", true)); schemeCode 重复或字段越界时抛 badRequest
+     */
     public R<Map<String, Object>> createScheme(Map<String, Object> body) {
         String code = toStr(body.get("schemeCode"));
         if (code == null) code = toStr(body.get("scheme_code"));
@@ -93,7 +127,12 @@ public class EsgSchemeService {
         return R.ok(resp);
     }
 
-    // ============ get_scheme ============
+    /**
+     * <p>查询方案 (JSON 字段反序列化为 List)</p>
+     *
+     * @param id 方案 ID (必填)
+     * @return R.ok(Map); 不存在或已删除时抛 badRequest
+     */
     public R<Map<String, Object>> getScheme(Long id) {
         EsgScheme s = schemeMapper.selectByIdActive(id);
         if (s == null) throw BizException.badRequest("方案不存在或已删除");
@@ -102,7 +141,13 @@ public class EsgSchemeService {
         return R.ok(map);
     }
 
-    // ============ update_scheme ============
+    /**
+     * <p>更新方案 (按字段选择性更新)</p>
+     *
+     * @param id   方案 ID (必填)
+     * @param body 待更新字段 (camelCase 或 snake_case 均可)
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 badRequest
+     */
     public R<Map<String, Object>> updateScheme(Long id, Map<String, Object> body) {
         EsgScheme exist = schemeMapper.selectByIdActive(id);
         if (exist == null) throw BizException.badRequest("方案不存在");
@@ -135,14 +180,25 @@ public class EsgSchemeService {
         return R.ok(Map.of("ok", true));
     }
 
-    // ============ delete_scheme ============
+    /**
+     * <p>软删除方案 (is_deleted=1)</p>
+     *
+     * @param id 方案 ID (必填)
+     * @return R.ok(Map.of("ok", true)); 不存在或已删除时抛 badRequest
+     */
     public R<Map<String, Object>> deleteScheme(Long id) {
         int n = schemeMapper.softDeleteById(id, 1L);
         if (n == 0) throw BizException.badRequest("方案不存在或已删除");
         return R.ok(Map.of("ok", true));
     }
 
-    // ============ clone_scheme ============
+    /**
+     * <p>克隆方案 (复制全部配置 + 改 scheme_code/name + status=DRAFT)</p>
+     *
+     * @param id   源方案 ID (必填)
+     * @param body 含 newSchemeCode/new_scheme_code (必填, ≥3 字符) + newSchemeName/new_scheme_name (可选, 默认 "(副本)")
+     * @return R.ok(Map.of("id"/"schemeCode"/"schemeName"/"ok", true))
+     */
     public R<Map<String, Object>> cloneScheme(Long id, Map<String, Object> body) {
         EsgScheme src = schemeMapper.selectByIdActive(id);
         if (src == null) throw BizException.badRequest("源方案不存在");

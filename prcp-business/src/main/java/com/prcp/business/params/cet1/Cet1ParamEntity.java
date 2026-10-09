@@ -11,13 +11,24 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * CET1 参数补录 实体
- * 表：prcp_cet1_param
- * 主键规则：{scheme_code}_{node_code}_{YYYYMMDD}（手工指定 INPUT）
+ * <p>实体类: 映射数据库表 prcp_cet1_param</p>
  *
- * 字段说明：
- *  - 分子参数（is_numerator / numerator_factor / numerator_operator）：CET1 核心一级资本折算
- *  - RWA  参数（is_rwa         / rwa_weight         / rwa_operator        ）：风险加权资产权重
+ * <p>字段说明:
+ * <ul>
+ *   <li>id - 复合主键 {scheme_code}_{node_code}_{YYYYMMDD} (手工指定 INPUT)</li>
+ *   <li>schemeId / schemeCode - 方案 ID 和编码</li>
+ *   <li>nodeId / nodeCode / nodeName - 科目节点三件套</li>
+ *   <li>dataDate - 数据日期</li>
+ *   <li>isNumerator + numeratorFactor + numeratorOperator - 分子参数三件套 (CET1 核心一级资本)</li>
+ *   <li>isRwa + rwaWeight + rwaOperator - 风险加权资产三件套 (RWA)</li>
+ *   <li>numeratorCategory / rwaCategory - 分子/RWA 分类</li>
+ *   <li>currentBalance - 期末余额</li>
+ *   <li>isDeleted - 软删除标记 (0 有效, 1 删除)</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Data
 @TableName("prcp_cet1_param")

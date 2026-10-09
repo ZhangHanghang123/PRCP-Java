@@ -24,6 +24,36 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * <p>基础数据 Service (PRCP 64 桶 + 4 期限桶 + 7 度量)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>列表查询 (按方案/节点/日期/类别/关键字)</li>
+ *   <li>按方案二维矩阵 (节点 × 64 桶 + 大类汇总)</li>
+ *   <li>Upsert (4 元组唯一键 + 自动补节点元数据)</li>
+ *   <li>逻辑删除 (单/批量)</li>
+ *   <li>Excel 145 列宽表导出</li>
+ *   <li>Excel 导入/预览 (dryRun 支持)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>桶维度: m1..m60 (60 月) + y10/y15/y20/y30 (10/15/20/30 年) = 64 桶</li>
+ *   <li>期限类型: orig (原始期限) + rem (剩余期限) = 128 桶</li>
+ *   <li>度量: asf_rsf/hqla_factor/current_balance/avg_balance/weighted_rate/interest_amount/risk_weight</li>
+ *   <li>唯一约束: (coaNodeId, dataDate, dateOffset, offsetUnit)</li>
+ *   <li>软删除: is_deleted=1</li>
+ *   <li>分类规则: ZX_A*=资产 / ZX_L*=负债 / ZX_E*=权益 / path 中 L1_*</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.data.basic.mapper.BasicDataMapper
+ * @see com.prcp.business.data.BasicDataBuckets
+ */
 @Service
 @RequiredArgsConstructor
 public class BasicDataService {
@@ -33,8 +63,18 @@ public class BasicDataService {
     private static final List<String> DISPLAY_KEYS = Arrays.asList(BasicDataBuckets.DISPLAY_BUCKETS);
 
     /**
-     * 列表：scheme/coaNode/start/end/精确 date/category/nodeKw
-     * 返回：全 64 桶 + 7 度量 + 元数据
+     * <p>列表查询 (按方案/节点/日期/类别/关键字过滤)</p>
+     *
+     * <p>返回全 64 桶 + 7 度量 + 节点元数据; 任意过滤参数为空都视为不限制</p>
+     *
+     * @param schemeId  方案 ID (可选)
+     * @param coaNodeId 节点 ID (可选)
+     * @param startDate 起始日期 yyyy-MM-dd (可选)
+     * @param endDate   结束日期 yyyy-MM-dd (可选)
+     * @param dataDate  精确数据日期 yyyy-MM-dd (可选)
+     * @param category  大类 (资产/负债/权益/其他, 可选)
+     * @param nodeKw    节点关键字 (匹配 code/name, 可选)
+     * @return 行 Map 列表, 每行含 64 桶 (orig/rem) + 7 度量
      */
     public R<List<Map<String, Object>>> list(Long schemeId, Long coaNodeId, String startDate, String endDate,
                                               String dataDate, String category, String nodeKw) {
@@ -44,16 +84,26 @@ public class BasicDataService {
                 BUCKET_KEYS));
     }
 
+    /**
+     * <p>查询已录入的数据日期列表 (按方案过滤)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @return 日期字符串列表 yyyy-MM-dd
+     */
     public R<List<String>> dates(Long schemeId) {
         return R.ok(mapper.dates(schemeId));
     }
 
     /**
-     * 按方案二维矩阵（v3 单表 145 列 JOIN prcp_coa_node，对齐 Python basic.py by-scheme-matrix）
-     * 返回：{ scheme_id, data_date, date_offset, offset_unit, nodes, matrix, categories }
-     *  - nodes: 方案下所有节点（id/code/name/parent_id/level/path/category/...）
-     *  - matrix: {nodeId: {asf_rsf, hqla_factor, current_balance, ..., orig_m1..y30, rem_m1..y30}}
-     *  - categories: {ASSET/LIAB/EQUITY/OTHER: {all numeric keys totals}}
+     * <p>按方案 × 单日的二维矩阵查询 (对齐 Python basic.py by-scheme-matrix)</p>
+     *
+     * <p>输出 nodes (方案下所有节点), matrix[nodeId] (7 度量 + 64 桶 orig/rem), categories (按 L1 大类汇总)</p>
+     *
+     * @param schemeId    方案 ID (必填)
+     * @param dataDate    数据日期 yyyy-MM-dd (必填)
+     * @param dateOffset  日期偏移 (可选, 默认 0)
+     * @param offsetUnit  偏移单位 D/M/Y (可选, 默认 D)
+     * @return R.ok(Map.of("schemeId"/"dataDate"/"dateOffset"/"offsetUnit"/"nodes"/"matrix"/"categories"/"buckets", ...))
      */
     public R<Map<String, Object>> bySchemeMatrix(Long schemeId, String dataDate,
                                                   Integer dateOffset, String offsetUnit) {
@@ -195,7 +245,15 @@ public class BasicDataService {
         return Math.round(v * 10000.0) / 10000.0;
     }
 
-    /** 矩阵：节点 × 桶（按月分桶全 64 + 4），含 7 度量 */
+    /**
+     * <p>矩阵: 节点 × 桶 (按月分桶全 64 + 4), 含 7 度量</p>
+     *
+     * <p>前端按 buckets 顺序横展: m1..m60 + y10/y15/y20/y30</p>
+     *
+     * @param schemeId 方案 ID
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @return R.ok(Map.of("buckets"/"dates"/"rows"/"totalRows", ...))
+     */
     public R<Map<String, Object>> matrix(Long schemeId, String dataDate) {
         // 用全 64 桶（m1..m60 + y10/15/20/30）替代 8 代表桶
         List<Map<String, Object>> raw = mapper.matrix(schemeId, emptyToNull(dataDate), BUCKET_KEYS);
@@ -241,7 +299,12 @@ public class BasicDataService {
     }
 
     /**
-     * Upsert：支持 4 元组 + 64 桶 + 7 度量 + 1 说明 + 自动补节点元数据
+     * <p>Upsert (4 元组唯一键 + 64 桶 + 7 度量 + 自动补节点元数据)</p>
+     *
+     * <p>4 元组: (coaNodeId, dataDate, dateOffset, offsetUnit); 自动从 prcp_coa_node 加载节点元数据 (code/name/parentCode/level/leaf/category)</p>
+     *
+     * @param body 含 coaNodeId/dataDate + 桶 (orig_* / rem_*) + 度量 (asf_rsf 等) + 元数据字段
+     * @return R.ok(Map.of("id"|null + "mode", "insert"|"update")); 至少传一个字段
      */
     @Transactional
     public R<?> upsert(Map<String, Object> body) {
@@ -307,13 +370,23 @@ public class BasicDataService {
         }
     }
 
-    /** 逻辑删除 */
+    /**
+     * <p>逻辑删除 (单条, is_deleted=1)</p>
+     *
+     * @param id 基础数据主键 ID (必填)
+     * @return R.ok()
+     */
     public R<?> delete(Long id) {
         mapper.softDeleteById(id);
         return R.ok();
     }
 
-    /** 批量逻辑删除：body {ids:[1,2,3]} → {deleted:N} */
+    /**
+     * <p>批量逻辑删除 (is_deleted=1)</p>
+     *
+     * @param body 含 ids 数组 (Number 或字符串均可)
+     * @return R.ok(Map.of("deleted", N)); ids 缺失或解析失败时抛 badRequest
+     */
     @Transactional
     public R<Map<String, Object>> deleteBatch(Map<String, Object> body) {
         Object raw = body == null ? null : body.get("ids");
@@ -337,14 +410,16 @@ public class BasicDataService {
     // ============================================================
 
     /**
-     * 导出 145 列宽表（与 Python 版 export-xlsx 对齐）
-     *  - 第 1 行：标题（合并）
-     *  - 第 2 行：二级分组（基础信息 / 原始期限 / 剩余期限 / 度量）
-     *  - 第 3 行：详细列名
-     *  - 第 4+：数据
-     *  - freeze_panes='E4'（前 4 列冻结 + 4 行表头冻结）
-     *  - L1 节点整行蓝底
-     *  - 文件名：prcp_basic_{YYYYMMDD}_{off}{unit}.xlsx
+     * <p>导出 145 列宽表 xlsx (对齐 Python 版 export-xlsx)</p>
+     *
+     * <p>表头: 第 1 行 = 4 大分组, 第 2 行 = bucket/字段名, 第 3 行 = 详细列名; 数据从第 4 行开始</p>
+     *
+     * @param schemeId   方案 ID (可选, 为空则全部)
+     * @param dataDate   数据日期 yyyy-MM-dd (必填)
+     * @param dateOffset 日期偏移 (可选, 默认 0)
+     * @param offsetUnit 偏移单位 D/M/Y (可选, 默认 D)
+     * @param response   HTTP 响应 (用于直接写出 xlsx 字节流)
+     * @throws IOException 写出失败时
      */
     public void exportXlsx(Long schemeId, String dataDate, Integer dateOffset,
                            String offsetUnit, HttpServletResponse response) throws IOException {
@@ -454,14 +529,16 @@ public class BasicDataService {
     }
 
     /**
-     * Excel 导入 / 预览（dryRun=true 时只校验不入库）
-     * 期望 xlsx 表头（与 export 对齐）：
-     *   第 1 行：基础信息/原始期限/剩余期限/度量
-     *   第 2 行：bucket key（m1..y30）/ asf_rsf 等
-     *   第 3 行：详细列名
-     *   第 4+：数据
+     * <p>Excel 导入 / 预览 (dryRun=true 时只校验不入库)</p>
      *
-     * 返回：{inserted, updated, skipped, totalErrors, errors:[String]}
+     * <p>期望 xlsx 表头: 第 1 行=分组, 第 2 行=bucket/字段, 第 3 行=详细列名, 第 4+ 行=数据</p>
+     *
+     * @param file       上传的 xlsx 文件 (必填)
+     * @param schemeId   方案 ID
+     * @param dateOffset 日期偏移 (可选, 默认 0)
+     * @param offsetUnit 偏移单位 D/M/Y (可选, 默认 D)
+     * @param dryRun     true=只校验不入库, false=真正 upsert
+     * @return R.ok(Map.of("inserted"/"updated"/"skipped"/"totalErrors"/"errors", ...)); 错误超过 1000 行截断
      */
     @Transactional
     public R<Map<String, Object>> importXlsx(MultipartFile file, Long schemeId,

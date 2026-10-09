@@ -20,8 +20,23 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 认证 Controller
- * <p>兼容 Python 版 /prcp/api/auth/login 接口</p>
+ * <p>认证 Controller (登录鉴权)</p>
+ *
+ * <p>详细说明:
+ * <ul>
+ *   <li>业务背景: 提供用户名 + 密码登录, 返回 JWT token, 兼容 Python 版 /prcp/api/auth/login 接口</li>
+ *   <li>核心端点: POST /auth/login (登录)、POST /auth/health (健康检查)</li>
+ *   <li>关联模块: SysUserMapper、SysUser 实体、JwtUtil (生成/解析 token)</li>
+ * </ul>
+ * </p>
+ *
+ * <p>REST 前缀: {@code /auth}</p>
+ * <p>权限要求: 公开端点 (登录前可调用)</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.framework.security.JwtUtil
+ * @see com.prcp.business.auth.entity.SysUser
  */
 @Slf4j
 @RestController
@@ -33,10 +48,24 @@ public class AuthController {
     private final JwtUtil jwtUtil;
 
     /**
-     * 登录
+     * <p>用户登录 (验证用户名密码, 返回 JWT token)</p>
+     *
+     * <pre>
      * POST /auth/login
-     * body: {"username": "admin", "password": "admin123"}
-     * 或 application/x-www-form-urlencoded
+     * Body (JSON): {username: String, password: String}
+     *       或 application/x-www-form-urlencoded
+     *
+     * Response: R.ok({access_token, token_type, user_id, username, display_name, role})
+     *   access_token - JWT token
+     *   token_type   - "bearer"
+     *   user_id      - 用户 ID
+     *   role         - 角色编码 (ADMIN/USER/...)
+     * </pre>
+     *
+     * @param body 请求体 (可为 null, null 时尝试 form-data)
+     * @param req  HTTP 请求对象 (备用)
+     * @return R.ok({access_token, token_type, user_id, username, display_name, role})
+     * @throws com.prcp.common.exception.BizException 用户名/密码为空、用户不存在、密码错误、用户停用
      */
     @PostMapping("/login")
     public R<Map<String, Object>> login(@RequestBody(required = false) Map<String, String> body,
@@ -79,8 +108,18 @@ public class AuthController {
     }
 
     /**
-     * 健康检查
-     * GET /auth/health
+     * <p>健康检查 (返回服务运行状态、版本号、时间戳)</p>
+     *
+     * <pre>
+     * POST /auth/health
+     * Response: R.ok({status, module, version, timestamp})
+     *   status    - "UP"
+     *   module    - "prcp-java"
+     *   version   - "1.0.0"
+     *   timestamp - 毫秒级时间戳
+     * </pre>
+     *
+     * @return R.ok({status, module, version, timestamp})
      */
     @PostMapping("/health")
     public R<Map<String, Object>> health() {

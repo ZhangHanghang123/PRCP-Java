@@ -11,14 +11,30 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * NSFR 参数补录 Service
- * <p>对齐 Python routers/nsfr_param.py：</p>
+ * <p>NSFR (净稳定资金比例) 参数补录 Service</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>列表查询 (4 个过滤条件)</li>
+ *   <li>下拉选项 (4 类: schemes/nodes/operators/data_dates)</li>
+ *   <li>新增 (自动生成主键 + 自动补 node_name + 默认值)</li>
+ *   <li>部分更新 (skip null)</li>
+ *   <li>软删除</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
  * <ul>
- *   <li>ID = {scheme_code}_{node_code}_{YYYYMMDD}</li>
- *   <li>新增时自动补充 node_name（前端未传）</li>
- *   <li>更新采用「skip null」增量更新</li>
- *   <li>软删 is_deleted=1</li>
+ *   <li>复合主键: {scheme_code}_{node_code}_{YYYYMMDD}</li>
+ *   <li>软删除: is_deleted=1, 不物理删除</li>
+ *   <li>默认值: status='ACTIVE', is_asf=0, is_rsf=0, operator='+', factor=0</li>
  * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.params.nsfr.NsfrParamMapper
+ * @see com.prcp.business.params.nsfr.NsfrParamEntity
  */
 @Service
 @RequiredArgsConstructor
@@ -26,6 +42,15 @@ public class NsfrParamService {
 
     private final NsfrParamMapper nsfrParamMapper;
 
+    /**
+     * <p>列表查询 (4 个过滤条件, 空串视为无过滤)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param nodeId   节点 ID (可选)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @param keyword  关键字 (可选)
+     * @return Map.of("items", list, "total", list.size())
+     */
     public Map<String, Object> query(Long schemeId, Long nodeId, String dataDate, String keyword) {
         String dd = (dataDate == null || dataDate.isEmpty()) ? null : dataDate;
         String kw = (keyword == null || keyword.isEmpty()) ? null : keyword;
@@ -36,6 +61,11 @@ public class NsfrParamService {
         return resp;
     }
 
+    /**
+     * <p>下拉选项 (4 类: schemes/nodes/operators/data_dates)</p>
+     *
+     * @return Map 含 schemes/nodes/operators/data_dates 四个列表
+     */
     public Map<String, Object> listOptions() {
         Map<String, Object> opt = new LinkedHashMap<>();
         opt.put("schemes", nsfrParamMapper.listSchemes());
@@ -46,8 +76,10 @@ public class NsfrParamService {
     }
 
     /**
-     * 新增
-     * <p>ID 规则：{scheme_code}_{node_code}_{YYYYMMDD}</p>
+     * <p>新增 (ID 规则: {scheme_code}_{node_code}_{YYYYMMDD}, 自动补 node_name + 默认值填充)</p>
+     *
+     * @param e NSFR 参数实体 (schemeId/schemeCode/nodeId/nodeCode/dataDate 必填)
+     * @return 创建后的实体 (含 ID); 异常时抛 BizException
      */
     public NsfrParamEntity create(NsfrParamEntity e) {
         if (e.getSchemeId() == null) throw new BizException("schemeId 必填");
@@ -83,7 +115,10 @@ public class NsfrParamService {
     }
 
     /**
-     * 部分更新（skip null）
+     * <p>部分更新 (skip null)</p>
+     *
+     * @param e NSFR 参数实体 (id 必填)
+     * @return 更新后的实体; 不存在时抛 notFound
      */
     public NsfrParamEntity update(NsfrParamEntity e) {
         if (e.getId() == null || e.getId().isEmpty()) throw new BizException("id 不能为空");
@@ -104,7 +139,9 @@ public class NsfrParamService {
     }
 
     /**
-     * 软删
+     * <p>软删除 (is_deleted=1)</p>
+     *
+     * @param id 主键 ID (必填)
      */
     public void delete(String id) {
         NsfrParamEntity exist = nsfrParamMapper.selectById(id);

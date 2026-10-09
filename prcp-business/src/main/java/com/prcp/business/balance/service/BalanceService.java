@@ -14,12 +14,32 @@ import java.time.LocalDate;
 import java.util.*;
 
 /**
- * 资产负债表 Service — 对位 Python app/routers/balance.py
+ * <p>资产负债表 Service — 对位 Python app/routers/balance.py</p>
  *
- * 数据来源：prcp_data_balance（24 月缺口 + 7 度量）
+ * <p>核心职责:
+ * <ol>
+ *   <li>列表查询 (按节点/日期/方案过滤)</li>
+ *   <li>按 (coa_node_id, data_date) 唯一键 upsert</li>
+ *   <li>软删除 (is_deleted=1)</li>
+ *   <li>24 月缺口汇总 (sum/min/max)</li>
+ *   <li>方案 × 月份矩阵 (按 L1 大类聚合 + 加权)</li>
+ *   <li>已录入日期统计 (行数/总额/总息)</li>
+ *   <li>单日方案查询 + L1 大类汇总</li>
+ * </ol>
+ * </p>
  *
- * @author WorkBuddy Agent
- * @date 2026-09-27
+ * <p>关键约定:
+ * <ul>
+ *   <li>数据来源: prcp_data_balance (24 月缺口 + 7 度量)</li>
+ *   <li>唯一约束: (coa_node_id, data_date) + is_deleted=0</li>
+ *   <li>软删除: is_deleted=1, 不物理删除</li>
+ *   <li>gap 字段: m1_gap ... m24_gap (24 个月, BigDecimal)</li>
+ *   <li>加权口径: interest_rate / capital_ratio / risk_weight 按 avg_balance 加权</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Slf4j
 @Service
@@ -45,7 +65,18 @@ public class BalanceService {
         return sb.toString();
     }
 
-    // ============== 1. list ==============
+    /**
+     * <p>列表查询 (按节点/日期/方案过滤)</p>
+     *
+     * <p>任意过滤参数为空都视为不限制, 结果按 n.path, data_date.当前, coa_node_id 排序</p>
+     *
+     * @param coaNodeId 节点 ID (可选)
+     * @param dataDate  数据日期 yyyy-MM-dd (可选)
+     * @param startDate 起始日期 yyyy-MM-dd (可选)
+     * @param endDate   结束日期 yyyy-MM-dd (可选)
+     * @param schemeId  方案 ID (可选)
+     * @return R.ok(Map.of("items", list, "total", list.size())), 每条含 gaps 列表
+     */
     public R<Map<String, Object>> list(Long coaNodeId, String dataDate, String startDate, String endDate, Long schemeId) {
         StringBuilder sql = new StringBuilder(
                 "SELECT b.id, b.coa_node_id AS coaNodeId, n.node_code AS nodeCode, n.node_name AS nodeName,"
@@ -100,7 +131,14 @@ public class BalanceService {
         return m;
     }
 
-    // ============== 2. upsert ==============
+    /**
+     * <p>按 (coa_node_id, data_date) 唯一键 upsert 资产负债表</p>
+     *
+     * <p>存在则更新 (action=updated), 不存在则插入 (action=created); gaps 不足 24 位补 0</p>
+     *
+     * @param body 含 coa_node_id, data_date, 7 度量 + gaps 列表 + calc_note 的 Map
+     * @return R.ok(Map.of("id", recordId, "action", "updated"|"created"))
+     */
     @Transactional
     public R<Map<String, Object>> upsert(Map<String, Object> body) {
         Object nodeIdObj = body.get("coa_node_id");
@@ -176,7 +214,12 @@ public class BalanceService {
         }
     }
 
-    // ============== 3. delete ==============
+    /**
+     * <p>软删除资产负债表 (is_deleted=1)</p>
+     *
+     * @param bid 资产负债表主键 ID (必填)
+     * @return R.ok({ok: true}); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> delete(Long bid) {
         if (bid == null) throw BizException.badRequest("id 必填");
@@ -185,7 +228,12 @@ public class BalanceService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============== 4. gap-summary ==============
+    /**
+     * <p>某数据日期的 24 月缺口汇总 (sum/min/max)</p>
+     *
+     * @param dataDate 数据日期 yyyy-MM-dd (必填)
+     * @return R.ok(Map.of("data_date", dataDate, "items", list, "total", size)), 每条含 24 月 gaps 列表 + sum_24m/min_gap/max_gap
+     */
     public R<Map<String, Object>> gapSummary(String dataDate) {
         if (dataDate == null || dataDate.isEmpty()) throw BizException.badRequest("data_date 必填");
         StringBuilder sql = new StringBuilder(
@@ -216,7 +264,16 @@ public class BalanceService {
         return R.ok(resp);
     }
 
-    // ============== 5. by-scheme-matrix ==============
+    /**
+     * <p>按方案 × 月份的矩阵查询 (含 L1 大类加权聚合)</p>
+     *
+     * <p>输出 dates (月份列表), nodes (节点含 L1 大类), matrix[nodeId][ym] (7 度量), categories[L1][ym] (按 avg_balance 加权)</p>
+     *
+     * @param schemeId  方案 ID (必填)
+     * @param startDate 起始日期 yyyy-MM-dd (必填)
+     * @param endDate   结束日期 yyyy-MM-dd (必填)
+     * @return R.ok(Map.of("dates"/"nodes"/"matrix"/"categories", ...))
+     */
     public R<Map<String, Object>> bySchemeMatrix(Long schemeId, String startDate, String endDate) {
         if (schemeId == null) throw BizException.badRequest("scheme_id 必填");
         if (startDate == null || endDate == null) throw BizException.badRequest("start_date 和 end_date 必填");
@@ -360,7 +417,13 @@ public class BalanceService {
         return sb.toString();
     }
 
-    // ============== 6. by-scheme（单日） ==============
+    /**
+     * <p>按方案 × 单日查询 (按 n.path 排序, 含 gaps 列表 + sum_24m)</p>
+     *
+     * @param schemeId 方案 ID (必填)
+     * @param dataDate 数据日期 yyyy-MM-dd (必填)
+     * @return R.ok(Map.of("scheme_id"/"data_date"/"items"/"total", ...))
+     */
     public R<Map<String, Object>> byScheme(Long schemeId, String dataDate) {
         if (schemeId == null || dataDate == null) throw BizException.badRequest("scheme_id 和 data_date 必填");
         StringBuilder sql = new StringBuilder(
@@ -387,7 +450,12 @@ public class BalanceService {
         return R.ok(resp);
     }
 
-    // ============== 7. dates ==============
+    /**
+     * <p>已录入日期统计 (按方案过滤), 含记录数/总余额/总利息</p>
+     *
+     * @param schemeId 方案 ID (可选, null 则全局)
+     * @return R.ok(Map.of("items", list, "total", size)), 按 data_date 倒序
+     */
     public R<Map<String, Object>> dates(Long schemeId) {
         StringBuilder sql = new StringBuilder(
                 "SELECT b.data_date AS dataDate, COUNT(*) AS cnt,"
@@ -412,7 +480,13 @@ public class BalanceService {
         return R.ok(resp);
     }
 
-    // ============== 8. category-summary ==============
+    /**
+     * <p>单日 × L1 大类的分类汇总 (按 node_level=3 聚合, 加权计算 rate/cap/rw)</p>
+     *
+     * @param dataDate 数据日期 yyyy-MM-dd (必填)
+     * @param schemeId 方案 ID (可选, null 则全局)
+     * @return R.ok(Map.of("data_date"/"items"/"total", ...))
+     */
     public R<Map<String, Object>> categorySummary(String dataDate, Long schemeId) {
         if (dataDate == null) throw BizException.badRequest("data_date 必填");
         StringBuilder sql = new StringBuilder(

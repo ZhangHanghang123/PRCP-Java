@@ -12,20 +12,23 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 引擎统一入口（对位 Python app.routers.engines）
+ * <p>引擎统一入口 Controller (对位 Python app/routers/engines.py)</p>
  *
- * <p>API：
- * <pre>
- *   POST /sim/schemes/{sid}/run    触发引擎
- *   GET  /sim/runs/{rid}           查询单次执行
- *   GET  /sim/runs                 列出执行历史
- *   GET  /sim/results              结果快照
- * </pre>
+ * <p>详细说明:
+ * <ul>
+ *   <li>业务背景: 调度不同引擎 (new_business / 未来更多) 执行模拟方案, 通过 EngineRegistry 解析 + 路由</li>
+ *   <li>核心端点: POST /sim/schemes/{sid}/run (触发)、GET /sim/runs/{rid} (查询单次)、GET /sim/runs (历史)、GET /sim/results (快照)</li>
+ *   <li>关联模块: EngineRegistry / EngineBase / EngineContext</li>
+ * </ul>
+ * </p>
  *
- * <p>对齐 Python：{@code backend/app/routers/engines.py}
+ * <p>REST 前缀: {@code /sim} (与 SimController 共用)</p>
+ * <p>权限要求: 登录用户 (Bearer Token), 详见 SecurityConfig</p>
  *
- * @author WorkBuddy Agent
- * @date 2026-09-26
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.engines.EngineRegistry
+ * @see com.prcp.business.engines.EngineBase
  */
 @Slf4j
 @RestController
@@ -38,6 +41,12 @@ public class EngineController {
     private final EngineRegistry registry;
     private final DataSource dataSource;
 
+    /**
+     * <p>根据 engineType 解析引擎实例 (默认 new_business), 异常时包装为 BizException</p>
+     *
+     * @param engineType 引擎类型 (可为 null)
+     * @return 引擎实例
+     */
     private EngineBase engineOf(String engineType) {
         try {
             return registry.getEngine(engineType == null ? DEFAULT_ENGINE_TYPE : engineType);
@@ -47,8 +56,24 @@ public class EngineController {
     }
 
     /**
-     * 1. 触发引擎执行
-     * POST /sim/schemes/{sid}/run?engineType=new_business&monthCount=60
+     * <p>1. 触发引擎执行</p>
+     *
+     * <pre>
+     * POST /sim/schemes/{sid}/run
+     * Path:  sid        (Long, required) - 方案 ID
+     * Query: engineType (String, optional, default "new_business") - 引擎类型
+     *        monthCount (Integer, optional, default 60) - 模拟月数
+     *
+     * Response: R.ok({ok, run_id, engine_type, engine_name, month_count, status})
+     *   run_id      - 运行 ID (用于查询状态/结果)
+     *   engine_name - 引擎显示名
+     *   status      - "SUCCESS" / "FAILED"
+     * </pre>
+     *
+     * @param sid        方案 ID
+     * @param engineType 引擎类型 (默认 new_business)
+     * @param monthCount 模拟月数 (默认 60)
+     * @return R.ok({run_id, status, ...})
      */
     @PostMapping("/schemes/{sid}/run")
     public R<Map<String, Object>> run(
@@ -83,8 +108,19 @@ public class EngineController {
     }
 
     /**
-     * 2. 查询单次执行状态
-     * GET /sim/runs/{rid}?engineType=new_business
+     * <p>2. 查询单次执行状态</p>
+     *
+     * <pre>
+     * GET /sim/runs/{rid}
+     * Path:  rid        (Long, required) - 运行 ID
+     * Query: engineType (String, optional, default "new_business") - 引擎类型
+     *
+     * Response: R.ok({run_id, sim_scheme_id, status, started_at, finished_at, ...})
+     * </pre>
+     *
+     * @param rid        运行 ID
+     * @param engineType 引擎类型 (默认 new_business)
+     * @return R.ok(运行详情)
      */
     @GetMapping("/runs/{rid}")
     public R<Map<String, Object>> getRun(
@@ -101,8 +137,25 @@ public class EngineController {
     }
 
     /**
-     * 3. 列出执行历史
-     * GET /sim/runs?simSchemeId=&simSchemeCode=&status=&limit=20
+     * <p>3. 列出执行历史</p>
+     *
+     * <pre>
+     * GET /sim/runs
+     * Query: engineType    (String, optional, default "new_business") - 引擎类型
+     *        simSchemeId   (Long, optional) - 模拟方案 ID
+     *        simSchemeCode (String, optional) - 模拟方案编码
+     *        status        (String, optional) - 状态过滤
+     *        limit         (Integer, optional, default 20) - 最大条数
+     *
+     * Response: R.ok({items: [{run_id, sim_scheme_id, status, started_at}], engine_type})
+     * </pre>
+     *
+     * @param engineType    引擎类型
+     * @param simSchemeId   模拟方案 ID (可选)
+     * @param simSchemeCode 模拟方案编码 (可选)
+     * @param status        状态过滤 (可选)
+     * @param limit         最大条数 (默认 20)
+     * @return R.ok({items, engine_type})
      */
     @GetMapping("/runs")
     public R<Map<String, Object>> listRuns(
@@ -130,8 +183,29 @@ public class EngineController {
     }
 
     /**
-     * 4. 查询结果快照
-     * GET /sim/results?simSchemeCode=&runId=&dateOffset=&coaNodeId=&category=&withBuckets=false
+     * <p>4. 查询结果快照</p>
+     *
+     * <pre>
+     * GET /sim/results
+     * Query: engineType    (String, optional, default "new_business") - 引擎类型
+     *        simSchemeCode (String, optional) - 模拟方案编码
+     *        runId         (Long, optional) - 运行 ID
+     *        dateOffset    (Integer, optional) - 日期偏移量
+     *        coaNodeId     (Long, optional) - 账户册节点 ID
+     *        category      (String, optional) - 类别
+     *        withBuckets   (Boolean, optional, default false) - 是否含 64 桶明细
+     *
+     * Response: R.ok({items: [{sim_scheme_code, run_id, date_offset, coa_node_id, category, metrics}], engine_type})
+     * </pre>
+     *
+     * @param engineType    引擎类型
+     * @param simSchemeCode 模拟方案编码 (可选)
+     * @param runId         运行 ID (可选)
+     * @param dateOffset    日期偏移量 (可选)
+     * @param coaNodeId     账户册节点 ID (可选)
+     * @param category      类别 (可选)
+     * @param withBuckets   是否含 64 桶明细 (默认 false)
+     * @return R.ok({items, engine_type})
      */
     @GetMapping("/results")
     public R<Map<String, Object>> listResults(

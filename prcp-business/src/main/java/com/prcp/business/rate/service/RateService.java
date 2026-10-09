@@ -16,6 +16,34 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
+/**
+ * <p>利率曲线 Service (Rate Scheme + Rate Point + Svensson 拟合)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>曲线方案 CRUD (含级联软删)</li>
+ *   <li>利率点 CRUD (13 期限点: d1/d7/m1..m6/y1..y30)</li>
+ *   <li>历史曲线对比 + CSV 导出</li>
+ *   <li>按期限点查单一利率 (lookup)</li>
+ *   <li>Svensson / Nelson-Siegel 模型拟合 (4 元线性回归)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>13 期限点: d1/d7/m1/m3/m6/y1/y2/y3/y5/y10/y15/y20/y30</li>
+ *   <li>自动计算: curve_slope = 10Y - 1Y; curve_shift_bps = (10Y - prev10Y) × 100</li>
+ *   <li>软删除: is_deleted=1, 不物理删除 (含级联)</li>
+ *   <li>Svensson: 6 参数 β₀~3 + τ₁/τ₂; Nelson-Siegel: 复用 Svensson (τ₂→∞)</li>
+ *   <li>默认值: ccy='CNY', data_source='WIND', status='ACTIVE'</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.rate.mapper.RatePointMapper
+ * @see com.prcp.business.rate.RateKeys
+ */
 @Service
 @RequiredArgsConstructor
 public class RateService {
@@ -25,7 +53,13 @@ public class RateService {
 
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
-    // ============ 曲线方案 CRUD ============
+    /**
+     * <p>列出曲线方案 (按 curveType/status 过滤)</p>
+     *
+     * @param curveType 曲线类型 (可选)
+     * @param status    状态 (可选)
+     * @return R.ok(Map.of("items", list, "total", list.size()))
+     */
     public R<Map<String, Object>> listSchemes(String curveType, String status) {
         List<Map<String, Object>> items = schemeMapper.listSchemes(emptyToNull(curveType), emptyToNull(status));
         Map<String, Object> resp = new LinkedHashMap<>();
@@ -34,6 +68,12 @@ public class RateService {
         return R.ok(resp);
     }
 
+    /**
+     * <p>创建曲线方案 (默认 ccy='CNY', data_source='WIND', status='ACTIVE')</p>
+     *
+     * @param s 曲线方案实体 (curveCode/curveName/curveType 必填)
+     * @return R.ok(Map.of("id"/"curve_code"/"ok", true))
+     */
     public R<Map<String, Object>> createScheme(RateScheme s) {
         if (s.getCurveCode() == null || s.getCurveCode().isEmpty())
             throw BizException.badRequest("curve_code 不能为空");
@@ -54,6 +94,13 @@ public class RateService {
         return R.ok(resp);
     }
 
+    /**
+     * <p>更新曲线方案 (强制清空 curveCode/isDeleted 保护主键和软删除)</p>
+     *
+     * @param id 方案 ID (必填)
+     * @param s  待更新的字段
+     * @return R.ok() 或 R.fail; 不存在时抛 badRequest
+     */
     public R<?> updateScheme(Long id, RateScheme s) {
         if (id == null) throw BizException.badRequest("id 不能为空");
         RateScheme exist = schemeMapper.selectById(id);
@@ -67,6 +114,12 @@ public class RateService {
         return ok ? R.ok() : R.fail("更新失败");
     }
 
+    /**
+     * <p>软删除曲线方案 (级联软删所有利率点)</p>
+     *
+     * @param id 方案 ID (必填)
+     * @return R.ok(); 不存在或已删除时抛 badRequest
+     */
     @Transactional
     public R<?> deleteScheme(Long id) {
         int n = schemeMapper.softDeleteById(id, 1L);
@@ -76,7 +129,13 @@ public class RateService {
         return R.ok();
     }
 
-    // ============ 利率点 CRUD ============
+    /**
+     * <p>列出利率点 (按 curveCode/dataDate 过滤, 13 个利率列重组为 rates 子字典)</p>
+     *
+     * @param curveCode 曲线编码 (可选)
+     * @param dataDate  数据日期 yyyy-MM-dd (可选)
+     * @return R.ok(Map.of("items", list, "total", list.size())), 每条含 rates 子字典
+     */
     public R<Map<String, Object>> listPoints(String curveCode, String dataDate) {
         List<Map<String, Object>> items = pointMapper.listPoints(emptyToNull(curveCode), emptyToNull(dataDate));
         // 把 13 个利率列重组成 rates 子字典（对齐 Python）
@@ -94,6 +153,12 @@ public class RateService {
         return R.ok(resp);
     }
 
+    /**
+     * <p>Upsert 利率点 (自动算 curve_slope + curve_shift_bps)</p>
+     *
+     * @param body 含 curveCode/curve_code + dataDate/data_date + ccy + rates 字典 (13 期限点)
+     * @return R.ok(Map.of("ok"/"curve_code"/"data_date"/"curve_shift_bps"/"curve_slope"))
+     */
     @Transactional
     public R<Map<String, Object>> upsertPoint(Map<String, Object> body) {
         String curveCode = toStr(body.get("curveCode") != null ? body.get("curveCode") : body.get("curve_code"));
@@ -159,13 +224,26 @@ public class RateService {
         return R.ok(resp);
     }
 
+    /**
+     * <p>软删除利率点 (is_deleted=1)</p>
+     *
+     * @param id 利率点 ID (必填)
+     * @return R.ok(); 不存在时抛 badRequest
+     */
     public R<?> deletePoint(Long id) {
         int n = pointMapper.softDeleteById(id);
         if (n == 0) throw BizException.badRequest("利率点不存在或已删除");
         return R.ok();
     }
 
-    // ============ 历史曲线对比 ============
+    /**
+     * <p>历史曲线对比 (按日期范围取所有利率点)</p>
+     *
+     * @param curveCode 曲线编码 (必填)
+     * @param startDate 起始日期 yyyy-MM-dd (可选)
+     * @param endDate   结束日期 yyyy-MM-dd (可选)
+     * @return R.ok(Map.of("curve_code"/"items"/"total", ...))
+     */
     public R<Map<String, Object>> compareCurves(String curveCode, String startDate, String endDate) {
         if (curveCode == null || curveCode.isEmpty())
             throw BizException.badRequest("curve_code 不能为空");
@@ -192,7 +270,14 @@ public class RateService {
         return R.ok(resp);
     }
 
-    // ============ 工具：按期限点查单一利率 ============
+    /**
+     * <p>按期限点查单一利率</p>
+     *
+     * @param curveCode 曲线编码 (必填)
+     * @param dataDate  数据日期 yyyy-MM-dd (必填)
+     * @param term      期限点 (d1/d7/m1..y30, 必填)
+     * @return R.ok(Map.of("curve_code"/"data_date"/"term"/"rate", value))
+     */
     public R<Map<String, Object>> lookupRate(String curveCode, String dataDate, String term) {
         if (curveCode == null || curveCode.isEmpty())
             throw BizException.badRequest("curve_code 不能为空");
@@ -211,14 +296,14 @@ public class RateService {
         return R.ok(resp);
     }
 
-    // ============ Svensson 6 参数拟合（Nelson-Siegel-Svensson 模型）============
     /**
-     * Svensson 模型：
-     *   y(τ) = β₀ + β₁·[(1-e^(-τ/τ₁))/(τ/τ₁)]
-     *              + β₂·[(1-e^(-τ/τ₁))/(τ/τ₁) - e^(-τ/τ₁)]
-     *              + β₃·[(1-e^(-τ/τ₂))/(τ/τ₂) - e^(-τ/τ₂)]
-     * 简化：固定 τ₁=1, τ₂=5（行业常用初始值），用 4 元线性回归求 β₀~3
-     * Body: {curve_code, data_date}（必填）+ {tau1=1, tau2=5}（可选）
+     * <p>Svensson 6 参数拟合 (Nelson-Siegel-Svensson 模型)</p>
+     *
+     * <p>y(τ) = β₀ + β₁·[(1-e^(-τ/τ₁))/(τ/τ₁)] + β₂·[(1-e^(-τ/τ₁))/(τ/τ₁) - e^(-τ/τ₁)] + β₃·[(1-e^(-τ/τ₂))/(τ/τ₂) - e^(-τ/τ₂)]</p>
+     * <p>简化: 固定 τ₁=1, τ₂=5 (行业常用初始值), 用 4 元线性回归求 β₀~3</p>
+     *
+     * @param body 含 curve_code/data_date (必填) + tau1=1/tau2=5 (可选)
+     * @return R.ok(Map) 含 tau1/tau2/beta0~3/r_squared/fitted (13 期限点的拟合值)
      */
     public R<Map<String, Object>> fitSvensson(Map<String, Object> body) {
         String curveCode = toStr(body.get("curve_code"));
@@ -310,7 +395,12 @@ public class RateService {
         return R.ok(resp);
     }
 
-    /** Nelson-Siegel 4 参数拟合（不含第三项 hump，β₃=0）：复用 Svensson 实现，β₃ 强制 0 */
+    /**
+     * <p>Nelson-Siegel 4 参数拟合 (不含第三项 hump, β₃=0; 复用 Svensson 实现, τ₂→∞)</p>
+     *
+     * @param body 含 curve_code/data_date (必填) + tau1=1 (可选)
+     * @return R.ok(Map) 同 fitSvensson
+     */
     public R<Map<String, Object>> fitNS(Map<String, Object> body) {
         // 把 tau2 设为很大，β₃ 自然 ≈ 0
         body = new java.util.LinkedHashMap<>(body);
@@ -318,7 +408,15 @@ public class RateService {
         return fitSvensson(body);
     }
 
-    /** CSV 导出 */
+    /**
+     * <p>CSV 导出 (13 期限点 × 日期范围)</p>
+     *
+     * @param curveCode 曲线编码 (必填)
+     * @param startDate 起始日期 yyyy-MM-dd (可选)
+     * @param endDate   结束日期 yyyy-MM-dd (可选)
+     * @param resp      HTTP 响应 (用于直接写出 CSV)
+     * @throws java.io.IOException 写出失败时
+     */
     public void exportRates(String curveCode, String startDate, String endDate,
                              javax.servlet.http.HttpServletResponse resp) throws java.io.IOException {
         R<Map<String, Object>> data = compareCurves(curveCode, startDate, endDate);

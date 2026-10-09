@@ -11,11 +11,23 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * NSFR 参数补录
- * <p>对应表 prcp_nsfr_param</p>
- * <p>ID 规则：{scheme_code}_{node_code}_{YYYYMMDD}</p>
+ * <p>实体类: 映射数据库表 prcp_nsfr_param</p>
  *
- * @author PRCP WorkBuddy Agent
+ * <p>字段说明:
+ * <ul>
+ *   <li>id - 复合主键 {scheme_code}_{node_code}_{YYYYMMDD}</li>
+ *   <li>schemeId / schemeCode - 方案 ID 和编码</li>
+ *   <li>nodeId / nodeCode / nodeName - 科目节点三件套</li>
+ *   <li>dataDate - 数据日期</li>
+ *   <li>isAsf + asfFactor + asfOperator - 可用稳定资金 (Available Stable Funding) 三件套</li>
+ *   <li>isRsf + rsfFactor + rsfOperator - 所需稳定资金 (Required Stable Funding) 三件套</li>
+ *   <li>currentBalance - 期末余额</li>
+ *   <li>isDeleted - 软删除标记</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Data
 @TableName("prcp_nsfr_param")

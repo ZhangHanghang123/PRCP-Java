@@ -17,15 +17,32 @@ import java.time.LocalDate;
 import java.util.*;
 
 /**
- * ESG 执行服务（5 端点：fit-pca + generate-hjm + generate + run-all + case/run）
- * 对齐 Python routers/esg.py 执行类端点
+ * <p>ESG 执行服务 (5 端点: fit-pca + generate-hjm + generate + run-all + case/run)</p>
  *
- * 关键流程：
- *   fit-pca   → 加载 prcp_esg_curve_point → YieldCurveGenerator.fit_from_params → 写 prcp_esg_run
- *   generate-hjm → 用 fit 后的 generator 生成 HJM 路径 → 保存为 .npz + 写 run
- *   generate  → 把 last_hjm_paths 保存为正式 scenario 记录（含 blob + 9 JSON）
- *   run-all   → 一键三步
- *   case/run  → 一键演示：建方案 + 三步
+ * <p>核心职责:
+ * <ol>
+ *   <li>fit-pca: 加载 prcp_esg_curve_point → PCA 拟合 → 写 prcp_esg_run</li>
+ *   <li>generate-hjm: 用 fit 后的 generator 生成 HJM 路径 → 保存 .npz + 写 run</li>
+ *   <li>generate: 把 last_hjm_paths 保存为正式 scenario 记录 (含 blob + 9 JSON)</li>
+ *   <li>run-all: 一键三步 (fitPca → generateHjm → generateScenarios)</li>
+ *   <li>case/run: 一键演示 (建方案 + 三步)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>依赖顺序: fit-pca → generate-hjm → generate (后者依赖前者状态)</li>
+ *   <li>HJM 中间产物路径: /tmp/prcp_esg_cases/hjm_{schemeId}_{ts}.npz</li>
+ *   <li>Scenario 文件路径: /tmp/prcp_esg_cases/scenario_{schemeId}_{uuid12}.npz</li>
+ *   <li>scenario 表 9 JSON: percentile10/50/90 + finalMean/Std/Min/Max + volPerMaturity</li>
+ *   <li>HJM 路径校验: 负值 > 10% 时抛异常</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.esg.util.EsgGeneratorStore
+ * @see com.prcp.business.esg.mapper.EsgSchemeMapper
  */
 @Slf4j
 @Service
@@ -40,7 +57,15 @@ public class EsgExecutionService {
 
     private final ObjectMapper om = new ObjectMapper();
 
-    // ============ fit_pca ============
+    /**
+     * <p>PCA 拟合 (加载曲线点 → YieldCurveGenerator.fit_from_params → 写 run)</p>
+     *
+     * <p>曲线点不足或拟合失败时降级用默认参数</p>
+     *
+     * @param schemeId 方案 ID (必填)
+     * @param body     含 nFactors/n_factors (可选, 默认 scheme.n_factors)
+     * @return R.ok(Map.of("runId"/"summary", ...))
+     */
     public R<Map<String, Object>> fitPca(Long schemeId, Map<String, Object> body) {
         EsgScheme scheme = schemeMapper.selectByIdActive(schemeId);
         if (scheme == null) throw BizException.badRequest("方案不存在");
@@ -84,7 +109,13 @@ public class EsgExecutionService {
         return R.ok(resp);
     }
 
-    // ============ generate_hjm ============
+    /**
+     * <p>生成 HJM 路径 (依赖 PCA 已拟合, 校验后存 .npz 中间产物)</p>
+     *
+     * @param schemeId 方案 ID (必填, 必须已 fitPca)
+     * @param body     含 nScenarios/n_steps/nSteps/seed (可选, 默认 scheme 配置)
+     * @return R.ok(Map.of("runId"/"filePath"/"fileSize"/"summary", ...))
+     */
     public R<Map<String, Object>> generateHjm(Long schemeId, Map<String, Object> body) {
         EsgScheme scheme = schemeMapper.selectByIdActive(schemeId);
         if (scheme == null) throw BizException.badRequest("方案不存在");
@@ -151,7 +182,15 @@ public class EsgExecutionService {
         return R.ok(resp);
     }
 
-    // ============ generate_scenarios ============
+    /**
+     * <p>生成正式 scenario 记录 (BLOB + 9 JSON 持久化)</p>
+     *
+     * <p>依赖 HJM 已生成, 把 last_hjm_paths 转成 EsgScenario 实体写入 prcp_esg_scenario</p>
+     *
+     * @param schemeId 方案 ID (必填, 必须已 generateHjm)
+     * @param body     预留参数 (当前未用)
+     * @return R.ok(Map.of("runId"/"scenarioCode"/"scId"/"filePath", ...))
+     */
     public R<Map<String, Object>> generateScenarios(Long schemeId, Map<String, Object> body) {
         EsgScheme scheme = schemeMapper.selectByIdActive(schemeId);
         if (scheme == null) throw BizException.badRequest("方案不存在");
@@ -238,7 +277,12 @@ public class EsgExecutionService {
         return R.ok(resp);
     }
 
-    // ============ run_all（一键三步）============
+    /**
+     * <p>一键三步: fitPca → generateHjm → generateScenarios</p>
+     *
+     * @param schemeId 方案 ID (必填)
+     * @return R.ok(Map.of("schemeId"/"pcaRunId"/"hjmRunId"/"scenarioRunId"/"scenarioCode"/"scId"/"filePath", ...))
+     */
     public R<Map<String, Object>> runAll(Long schemeId) {
         R<Map<String, Object>> pcaR = fitPca(schemeId, Map.of());
         R<Map<String, Object>> hjmR = generateHjm(schemeId, Map.of());
@@ -255,7 +299,12 @@ public class EsgExecutionService {
         return R.ok(resp);
     }
 
-    // ============ case/run-one-click（一键演示）============
+    /**
+     * <p>一键演示: 建方案 (PRCP_ESG_DEMO_001) + 三步 (nScenarios=50, nSteps=24, seed=42)</p>
+     *
+     * @param body 含 dataSource (可选, 默认 ECB)
+     * @return R.ok(Map.of("schemeId"/"schemeCode"/"pcaRunId"/"hjmRunId"/"scenarioRunId"/"scenarioCode"/"scId"/"filePath", ...))
+     */
     public R<Map<String, Object>> caseRun(Map<String, Object> body) {
         String dataSource = body.get("dataSource") != null ? body.get("dataSource").toString() : "ECB";
         String code = "PRCP_ESG_DEMO_001";

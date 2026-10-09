@@ -13,17 +13,29 @@ import java.time.LocalDate;
 import java.util.*;
 
 /**
- * 反算 Dashboard 服务 — 对位 Python app/routers/reverse_dashboard.py
+ * <p>反算 Dashboard Service — 对位 Python app/routers/reverse_dashboard.py</p>
  *
- * 数据来源：
- * - 方案配置：prcp_reverse_scheme + prcp_coa_scheme
- * - Run 信息：prcp_reverse_run
- * - 月份 + 余额：prcp_data_reverse
- * - 节点元数据：prcp_coa_node
- * - 5 监管指标：prcp_metric_coefficient
+ * <p>核心职责:
+ * <ol>
+ *   <li>方案下拉选项 (含默认方案 = scheme_code='2026' 或首个)</li>
+ *   <li>方案下的 Run 列表</li>
+ *   <li>Run 下的月份列表 (M 单位)</li>
+ *   <li>Snapshot 快照 (KPI + 趋势 + 大类分布 + 节点矩阵 + Top 节点 + 风险预警)</li>
+ * </ol>
+ * </p>
  *
- * @author WorkBuddy Agent
- * @date 2026-09-27
+ * <p>关键约定:
+ * <ul>
+ *   <li>5 监管指标: ROE / CET1 / LCR / NSFR / DELTA_EVE</li>
+ *   <li>5 大类: ASSET / LIABILITY / EQUITY / OFF_BALANCE / OTHER</li>
+ *   <li>风险阈值: CET1≥8.5, LCR≥100, NSFR≥100, ROE≥11, |ΔEVE|≤5</li>
+ *   <li>数据来源: prcp_reverse_scheme + prcp_data_reverse + prcp_metric_coefficient + prcp_coa_node + prcp_kpi_value</li>
+ *   <li>metric_coefficient.scheme_code 存反算方案 code (如 REV_DNN_REG), 不是账户册 code</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Slf4j
 @Service
@@ -42,7 +54,11 @@ public class ReverseDashboardService {
     }
     private static final List<String> DEFAULT_METRIC_TYPES = List.of("ROE", "CET1", "LCR", "NSFR", "DELTA_EVE");
 
-    // ============== 1. options ==============
+    /**
+     * <p>方案下拉选项 (含默认方案 + 默认 Run + 默认 date_offset)</p>
+     *
+     * @return R.ok(Map.of("schemes"/"default", ...)); 默认 scheme_code='2026' 或首个
+     */
     public R<Map<String, Object>> options() {
         List<Map<String, Object>> schemes = jdbc.queryForList(
                 "SELECT s.id AS rev_id, s.scheme_code, s.scheme_name, s.coa_scheme_id, s.data_date, s.horizon_months,"
@@ -100,7 +116,12 @@ public class ReverseDashboardService {
         return R.ok(resp);
     }
 
-    // ============== 2. runs by scheme ==============
+    /**
+     * <p>方案下的 Run 列表</p>
+     *
+     * @param schemeCode 反算方案编码 (必填)
+     * @return R.ok(Map.of("scheme_code"/"items", ...)); 不存在时抛 notFound
+     */
     public R<Map<String, Object>> runs(String schemeCode) {
         if (schemeCode == null || schemeCode.isEmpty())
             throw BizException.badRequest("scheme_code 必填");
@@ -135,7 +156,13 @@ public class ReverseDashboardService {
         return R.ok(resp);
     }
 
-    // ============== 3. dates by scheme + run ==============
+    /**
+     * <p>Run 下的月份列表 (M 单位, 按 date_offset ASC)</p>
+     *
+     * @param schemeCode 反算方案编码 (必填)
+     * @param runId      Run ID (必填)
+     * @return R.ok(Map.of("scheme_code"/"run_id"/"items", ...))
+     */
     public R<Map<String, Object>> dates(String schemeCode, Long runId) {
         if (schemeCode == null || schemeCode.isEmpty() || runId == null)
             throw BizException.badRequest("scheme_code 和 run_id 必填");
@@ -158,7 +185,14 @@ public class ReverseDashboardService {
         return R.ok(resp);
     }
 
-    // ============== 4. snapshot ==============
+    /**
+     * <p>Snapshot 快照 (KPI + 趋势 + 大类分布 + 节点矩阵 + Top 节点 + 风险预警 + KPI 评分)</p>
+     *
+     * @param schemeCode 反算方案编码 (默认 "2026")
+     * @param runId      Run ID (可选, 默认最新 SUCCESS)
+     * @param dateOffset 日期偏移月数 (默认 1)
+     * @return R.ok(Map); 包含 kpi/trend/category_distribution/node_matrix/top_nodes/risk_alerts/kpi_scores
+     */
     public R<Map<String, Object>> snapshot(String schemeCode, Long runId, Integer dateOffset) {
         if (schemeCode == null || schemeCode.isEmpty()) schemeCode = "2026";
         if (dateOffset == null) dateOffset = 1;

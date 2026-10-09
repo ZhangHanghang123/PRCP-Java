@@ -9,9 +9,35 @@ import org.apache.ibatis.annotations.Select;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * <p>Mapper: prcp_metric_coefficient 表的 SQL 访问层 (指标系数表)</p>
+ *
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>query - 多维查询 (schemeId/nodeCode/metricCode/dataDate), LEFT JOIN node/scheme/dict 取名称</li>
+ *   <li>listSchemeOptions - 账户册方案下拉</li>
+ *   <li>listNodeOptions - 节点下拉 (可按 schemeId 过滤)</li>
+ *   <li>listMetricOptions - METRIC_TYPE 字典 (指标类型下拉)</li>
+ * </ul>
+ * </p>
+ *
+ * <p>度量字段: current_value + y1_value..y5_value (5 年预测)。</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ */
 @Mapper
 public interface MetricMapper extends BaseMapper<MetricCoefficient> {
 
+    /**
+     * <p>指标系数多维查询 (LEFT JOIN coa_node 取 nodeName, coa_scheme 取 schemeName, sys_dict 取 metricLabel)</p>
+     *
+     * @param schemeId  方案 ID (可选)
+     * @param nodeCode  节点编码 (可选)
+     * @param metricCode 指标编码 (可选)
+     * @param dataDate  数据日期 yyyy-MM-dd (可选)
+     * @return 系数 Map 列表, 含 currentValue/y1Value..y5Value, 按 scheme_code, node_code, metric_code, data_date DESC 排序
+     */
     @Select("""
         SELECT
           mc.id,
@@ -50,12 +76,23 @@ public interface MetricMapper extends BaseMapper<MetricCoefficient> {
                                      @Param("metricCode") String metricCode,
                                      @Param("dataDate") String dataDate);
 
+    /**
+     * <p>账户册方案下拉 (按 ID 升序)</p>
+     *
+     * @return [{id, schemeCode, schemeName}, ...]
+     */
     @Select("""
         SELECT id, scheme_code AS schemeCode, scheme_name AS schemeName
         FROM prcp_coa_scheme WHERE is_deleted = 0 ORDER BY id
     """)
     List<Map<String, Object>> listSchemeOptions();
 
+    /**
+     * <p>节点下拉 (可按 schemeId 过滤, 按 path, sort_order 排序)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @return [{id, nodeCode, nodeName, nodeLevel}, ...]
+     */
     @Select("""
         SELECT id, node_code AS nodeCode, node_name AS nodeName, node_level AS nodeLevel
         FROM prcp_coa_node WHERE is_deleted = 0
@@ -64,6 +101,11 @@ public interface MetricMapper extends BaseMapper<MetricCoefficient> {
     """)
     List<Map<String, Object>> listNodeOptions(@Param("schemeId") Long schemeId);
 
+    /**
+     * <p>METRIC_TYPE 字典下拉 (指标类型)</p>
+     *
+     * @return [{metricCode, metricLabel, color, sortOrder}, ...]
+     */
     @Select("""
         SELECT dict_key AS metricCode, dict_label AS metricLabel, color, sort_order AS sortOrder
         FROM sys_dict WHERE is_deleted = 0 AND status = 'ACTIVE' AND dict_type = 'METRIC_TYPE'

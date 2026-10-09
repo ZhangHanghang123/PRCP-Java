@@ -15,11 +15,30 @@ import java.time.LocalDate;
 import java.util.*;
 
 /**
- * 反算结果查询服务 — 对位 Python /data-reverse 路由
- * 数据源：prcp_data_reverse（64 桶 + 度量）+ prcp_reverse_scheme + prcp_reverse_run
+ * <p>反算结果查询 Service — 对位 Python /data-reverse 路由</p>
  *
- * @author WorkBuddy Agent
- * @date 2026-09-28
+ * <p>核心职责:
+ * <ol>
+ *   <li>有反算数据的方案列表 (按 scheme_code 聚合)</li>
+ *   <li>方案下的 Run 列表 (仅 status='SUCCESS')</li>
+ *   <li>Run 下的所有 data_date + date_offset</li>
+ *   <li>节点 × 64+桶 + 度量 矩阵 (账户册矩阵)</li>
+ *   <li>大类汇总 (按 category 聚合)</li>
+ *   <li>Excel 导出</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>数据源: prcp_data_reverse (64 桶 + 度量) + prcp_reverse_scheme + prcp_reverse_run</li>
+ *   <li>桶维度: orig_m1..orig_m60 + orig_y10/y15/y20/y30 = 64 orig + 64 rem = 128 桶</li>
+ *   <li>矩阵 LIMIT: 1000 行 (单次查询上限)</li>
+ *   <li>导出 LIMIT: 5000 行</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Slf4j
 @Service
@@ -29,7 +48,9 @@ public class ReverseResultService {
     private final JdbcTemplate jdbc;
 
     /**
-     * 有反算数据的方案列表（按 scheme_code 聚合）
+     * <p>有反算数据的方案列表 (按 scheme_code 聚合)</p>
+     *
+     * @return R.ok(Map.of("items", list)); 含 run_count/total_rows/first_date/last_date/date_count/last_run_at
      */
     public R<Map<String, Object>> listSchemes() {
         String sql =
@@ -47,7 +68,10 @@ public class ReverseResultService {
     }
 
     /**
-     * 方案下的运行列表（仅 status='SUCCESS'）
+     * <p>方案下的运行列表 (仅 status='SUCCESS')</p>
+     *
+     * @param schemeCode 反算方案编码 (必填)
+     * @return R.ok(Map.of("items", list)) LIMIT 200
      */
     public R<Map<String, Object>> listRuns(String schemeCode) {
         if (schemeCode == null || schemeCode.isEmpty()) {
@@ -72,7 +96,11 @@ public class ReverseResultService {
     }
 
     /**
-     * 方案 + run 下的所有 data_date + date_offset
+     * <p>方案 + Run 下的所有 data_date + date_offset (DISTINCT)</p>
+     *
+     * @param schemeCode 反算方案编码 (必填)
+     * @param runId      Run ID (可选)
+     * @return R.ok(Map.of("items", list))
      */
     public R<Map<String, Object>> listDates(String schemeCode, Long runId) {
         if (schemeCode == null || schemeCode.isEmpty()) throw BizException.badRequest("scheme_code 必填");
@@ -92,7 +120,13 @@ public class ReverseResultService {
     }
 
     /**
-     * 节点 × 64+桶 + 度量 矩阵（账户册矩阵）
+     * <p>节点 × 128 桶 (orig+rem) + 度量 矩阵 (账户册矩阵)</p>
+     *
+     * @param schemeCode 反算方案编码 (必填)
+     * @param runId      Run ID (可选)
+     * @param dataDate   数据日期 yyyy-MM-dd (可选)
+     * @param dateOffset 日期偏移 (可选)
+     * @return R.ok(Map.of("scheme_code"/"run_id"/"data_date"/"date_offset"/"buckets"/"rows"/"total", ...)) LIMIT 1000
      */
     public R<Map<String, Object>> bySchemeMatrix(String schemeCode, Long runId, String dataDate, Integer dateOffset) {
         if (schemeCode == null || schemeCode.isEmpty()) throw BizException.badRequest("scheme_code 必填");
@@ -127,7 +161,13 @@ public class ReverseResultService {
     }
 
     /**
-     * 大类汇总：按 category 聚合 64+64 桶 + 度量
+     * <p>大类汇总: 按 category 聚合 128 桶 + 度量</p>
+     *
+     * @param schemeCode 反算方案编码 (必填)
+     * @param runId      Run ID (可选)
+     * @param dataDate   数据日期 yyyy-MM-dd (可选)
+     * @param dateOffset 日期偏移 (可选)
+     * @return R.ok(Map.of("items", list)) 按 total_current_balance DESC
      */
     public R<Map<String, Object>> categorySummary(String schemeCode, Long runId, String dataDate, Integer dateOffset) {
         if (schemeCode == null || schemeCode.isEmpty()) throw BizException.badRequest("scheme_code 必填");
@@ -152,7 +192,11 @@ public class ReverseResultService {
     }
 
     /**
-     * Excel 导出：节点 × 128 桶 + 度量
+     * <p>Excel 导出: 节点 × 128 桶 + 度量</p>
+     *
+     * @param schemeCode 反算方案编码 (必填)
+     * @param runId      Run ID (可选)
+     * @param out        输出流 (用于直接写出 xlsx 字节)
      */
     public void exportXlsx(String schemeCode, Long runId, OutputStream out) {
         if (schemeCode == null || schemeCode.isEmpty()) throw BizException.badRequest("scheme_code 必填");

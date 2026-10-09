@@ -17,11 +17,31 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * LCR 参数补录 Service
- * <p>对位 Python app/routers/lcr_param.py</p>
+ * <p>LCR (流动性覆盖率) 参数补录 Service</p>
  *
- * <p>ID 生成规则：{scheme_code}_{node_code}_{YYYYMMDD}
- * 例如：ZX_COA_S010102010101_20251231</p>
+ * <p>核心职责:
+ * <ol>
+ *   <li>列表查询 (4 个过滤条件)</li>
+ *   <li>下拉选项 (4 个 bucket: schemes/nodes/operators/dataDates)</li>
+ *   <li>新增 (自动生成主键 + 自动补 node_name + 默认值填充)</li>
+ *   <li>LambdaUpdateWrapper partial update</li>
+ *   <li>软删除</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>复合主键: {scheme_code}_{node_code}_{YYYYMMDD} (例: ZX_COA_S010102010101_20251231)</li>
+ *   <li>软删除: is_deleted=1, 不物理删除</li>
+ *   <li>默认值: status='ACTIVE', operator='+', is_numerator=0, is_denominator=0</li>
+ *   <li>主键冲突兜底: 已存在时抛 badRequest</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.params.lcr.LcrParamMapper
+ * @see com.prcp.business.params.lcr.LcrParamEntity
  */
 @Slf4j
 @Service
@@ -33,7 +53,15 @@ public class LcrParamService extends ServiceImpl<LcrParamMapper, LcrParamEntity>
     /** yyyyMMdd 格式化器 */
     private static final DateTimeFormatter YMD = DateTimeFormatter.ofPattern("yyyyMMdd");
 
-    // ============== 1. 列表 ==============
+    /**
+     * <p>列表查询 (4 个过滤条件, 空串视为无过滤)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param nodeId   节点 ID (可选)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @param keyword  关键字 (可选)
+     * @return R.ok(Map.of("items", list, "total", list.size()))
+     */
     public R<Map<String, Object>> query(Long schemeId, Long nodeId, String dataDate, String keyword) {
         String dd = (dataDate == null || dataDate.isEmpty()) ? null : dataDate;
         String kw = (keyword == null || keyword.isEmpty()) ? null : keyword.trim();
@@ -44,7 +72,11 @@ public class LcrParamService extends ServiceImpl<LcrParamMapper, LcrParamEntity>
         return R.ok(resp);
     }
 
-    // ============== 2. 下拉选项 ==============
+    /**
+     * <p>下拉选项 (从 mapper 一次性取 4 类 bucket, 按 bucket 分组)</p>
+     *
+     * @return R.ok(Map.of("schemes"/"nodes"/"operators"/"dataDates", ...))
+     */
     public R<Map<String, Object>> listOptions() {
         List<Map<String, Object>> rows = lcrParamMapper.listOptionsRaw();
         List<Map<String, Object>> schemes = new ArrayList<>();
@@ -97,7 +129,12 @@ public class LcrParamService extends ServiceImpl<LcrParamMapper, LcrParamEntity>
         return R.ok(resp);
     }
 
-    // ============== 3. 新增 ==============
+    /**
+     * <p>新增 (自动生成主键 + 自动补 node_name + 默认值填充 + 主键冲突兜底)</p>
+     *
+     * @param e LCR 参数实体 (schemeId/schemeCode/nodeId/nodeCode/dataDate 必填)
+     * @return R.ok(Map.of("id"/"ok", true)); 主键冲突时抛 badRequest
+     */
     @Transactional
     public R<Map<String, Object>> create(LcrParamEntity e) {
         if (e.getSchemeId() == null) throw BizException.badRequest("scheme_id 不能为空");
@@ -142,7 +179,13 @@ public class LcrParamService extends ServiceImpl<LcrParamMapper, LcrParamEntity>
         return R.ok(resp);
     }
 
-    // ============== 4. 更新（partial）==============
+    /**
+     * <p>更新 (partial, 使用 LambdaUpdateWrapper 仅 SET 非 null 字段)</p>
+     *
+     * @param id 主键 ID (必填)
+     * @param e  待更新字段
+     * @return R.ok(Map.of("ok"/"id"/"updated", N)); 不存在时抛 notFound
+     */
     public R<Map<String, Object>> update(String id, LcrParamEntity e) {
         if (id == null || id.isEmpty()) throw BizException.badRequest("id 不能为空");
 
@@ -181,7 +224,12 @@ public class LcrParamService extends ServiceImpl<LcrParamMapper, LcrParamEntity>
         return R.ok(resp);
     }
 
-    // ============== 5. 软删 ==============
+    /**
+     * <p>软删除 (is_deleted=1)</p>
+     *
+     * @param id 主键 ID (必填)
+     * @return R.ok(Map.of("ok"/"id")); 不存在时抛 notFound
+     */
     public R<Map<String, Object>> softDelete(String id) {
         if (id == null || id.isEmpty()) throw BizException.badRequest("id 不能为空");
         LcrParamEntity existing = lcrParamMapper.selectById(id);
@@ -200,8 +248,14 @@ public class LcrParamService extends ServiceImpl<LcrParamMapper, LcrParamEntity>
         return ok ? R.ok(resp) : R.fail("删除失败");
     }
 
-    // ============== 工具方法 ==============
-    /** ID 生成：{scheme_code}_{node_code}_{YYYYMMDD} */
+    /**
+     * <p>ID 生成: {scheme_code}_{node_code}_{YYYYMMDD}</p>
+     *
+     * @param schemeCode 方案编码 (必填)
+     * @param nodeCode   节点编码 (必填)
+     * @param dataDate   数据日期 (必填)
+     * @return 复合主键字符串
+     */
     public static String buildId(String schemeCode, String nodeCode, LocalDate dataDate) {
         return schemeCode + "_" + nodeCode + "_" + dataDate.format(YMD);
     }

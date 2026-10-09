@@ -18,7 +18,28 @@ import java.security.MessageDigest;
 import java.util.List;
 
 /**
- * 系统管理服务（用户/角色/字典 CRUD）
+ * <p>系统管理 Service (用户/角色/字典 CRUD)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>用户 CRUD (含密码 SHA-256 加密 + 重置密码)</li>
+ *   <li>角色 CRUD</li>
+ *   <li>字典 CRUD (含按类型查询 + 字典项 CRUD)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>密码: SHA-256 哈希存储; 返回实体时自动隐藏 passwordHash</li>
+ *   <li>软删除: is_deleted=1, 不物理删除</li>
+ *   <li>用户名/角色编码唯一性校验</li>
+ *   <li>字典: dict_type + dict_key 组合 + status='ACTIVE'</li>
+ *   <li>字典项: 关联 dict_id, 默认 sort_order=0</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Service
 @RequiredArgsConstructor
@@ -29,8 +50,12 @@ public class SysService {
     private final DictMapper dictMapper;
     private final DictItemMapper dictItemMapper;
 
-    // ============== 用户 ==============
-
+    /**
+     * <p>查询用户列表 (按 username/display_name 模糊匹配, 隐藏 passwordHash)</p>
+     *
+     * @param keyword 关键字 (可选)
+     * @return SysUser 列表 (passwordHash 已清空)
+     */
     public List<SysUser> listUsers(String keyword) {
         QueryWrapper<SysUser> qw = new QueryWrapper<>();
         qw.eq("is_deleted", 0).orderByDesc("id");
@@ -43,6 +68,15 @@ public class SysService {
         return list;
     }
 
+    /**
+     * <p>创建用户 (密码 SHA-256 哈希, 默认 status=1, role='user')</p>
+     *
+     * @param username   用户名 (必填, 唯一)
+     * @param password   密码 (必填)
+     * @param displayName 显示名
+     * @param role       角色编码 (默认 'user')
+     * @return SysUser (passwordHash 已清空)
+     */
     public SysUser createUser(String username, String password, String displayName, String role) {
         if (username == null || username.isEmpty() || password == null || password.isEmpty()) {
             throw new BizException("用户名和密码不能为空");
@@ -65,6 +99,15 @@ public class SysService {
         return u;
     }
 
+    /**
+     * <p>更新用户 (按字段选择性更新, passwordHash 不通过此方法改)</p>
+     *
+     * @param uid        用户 ID (必填)
+     * @param displayName 显示名 (可选)
+     * @param role       角色编码 (可选)
+     * @param status     状态 (可选, 1=启用, 0=禁用)
+     * @return SysUser (passwordHash 已清空)
+     */
     public SysUser updateUser(Long uid, String displayName, String role, Integer status) {
         SysUser u = userMapper.selectById(uid);
         if (u == null) throw new BizException("用户不存在");
@@ -77,6 +120,11 @@ public class SysService {
         return u;
     }
 
+    /**
+     * <p>软删除用户 (is_deleted=1)</p>
+     *
+     * @param uid 用户 ID (必填)
+     */
     @Transactional
     public void deleteUser(Long uid) {
         SysUser u = userMapper.selectById(uid);
@@ -86,6 +134,12 @@ public class SysService {
         userMapper.updateById(u);
     }
 
+    /**
+     * <p>重置用户密码 (SHA-256 哈希)</p>
+     *
+     * @param uid        用户 ID (必填)
+     * @param newPassword 新密码 (必填)
+     */
     public void resetPassword(Long uid, String newPassword) {
         if (newPassword == null || newPassword.isEmpty()) {
             throw new BizException("新密码不能为空");
@@ -97,12 +151,23 @@ public class SysService {
         userMapper.updateById(u);
     }
 
-    // ============== 角色 ==============
-
+    /**
+     * <p>查询角色列表 (按 id 升序)</p>
+     *
+     * @return SysRole 列表
+     */
     public List<SysRole> listRoles() {
         return roleMapper.selectList(new QueryWrapper<SysRole>().eq("is_deleted", 0).orderByAsc("id"));
     }
 
+    /**
+     * <p>创建角色 (默认 status=1)</p>
+     *
+     * @param roleCode    角色编码 (必填, 唯一)
+     * @param roleName    角色名
+     * @param description 描述
+     * @return SysRole
+     */
     public SysRole createRole(String roleCode, String roleName, String description) {
         Long exist = roleMapper.selectCount(new QueryWrapper<SysRole>().eq("role_code", roleCode));
         if (exist != null && exist > 0) {
@@ -120,6 +185,15 @@ public class SysService {
         return r;
     }
 
+    /**
+     * <p>更新角色</p>
+     *
+     * @param rid         角色 ID (必填)
+     * @param roleName    角色名 (可选)
+     * @param description 描述 (可选)
+     * @param status      状态 (可选)
+     * @return SysRole
+     */
     public SysRole updateRole(Long rid, String roleName, String description, Integer status) {
         SysRole r = roleMapper.selectById(rid);
         if (r == null) throw new BizException("角色不存在");
@@ -131,6 +205,11 @@ public class SysService {
         return r;
     }
 
+    /**
+     * <p>软删除角色 (is_deleted=1)</p>
+     *
+     * @param rid 角色 ID (必填)
+     */
     public void deleteRole(Long rid) {
         SysRole r = roleMapper.selectById(rid);
         if (r == null) throw new BizException("角色不存在");
@@ -139,8 +218,12 @@ public class SysService {
         roleMapper.updateById(r);
     }
 
-    // ============== 字典 ==============
-
+    /**
+     * <p>查询字典列表 (按 dict_type/sort_order 升序, 模糊匹配)</p>
+     *
+     * @param keyword 关键字 (可选, 匹配 dict_type/key/label)
+     * @return SysDict 列表
+     */
     public List<SysDict> listDicts(String keyword) {
         QueryWrapper<SysDict> qw = new QueryWrapper<>();
         qw.eq("is_deleted", 0).orderByAsc("dict_type", "sort_order");
@@ -150,6 +233,12 @@ public class SysService {
         return dictMapper.selectList(qw);
     }
 
+    /**
+     * <p>按类型查字典 (仅 ACTIVE)</p>
+     *
+     * @param dictType 字典类型 (必填)
+     * @return SysDict 列表 (按 sort_order 升序)
+     */
     public List<SysDict> listByType(String dictType) {
         return dictMapper.selectList(new QueryWrapper<SysDict>()
                 .eq("dict_type", dictType)
@@ -158,6 +247,16 @@ public class SysService {
                 .orderByAsc("sort_order"));
     }
 
+    /**
+     * <p>创建字典 (默认 status='ACTIVE')</p>
+     *
+     * @param dictType  字典类型 (必填)
+     * @param dictKey   字典键 (必填)
+     * @param dictLabel 字典标签
+     * @param color     颜色 (可选)
+     * @param sortOrder 排序 (默认 0)
+     * @return SysDict
+     */
     public SysDict createDict(String dictType, String dictKey, String dictLabel, String color, Integer sortOrder) {
         SysDict d = new SysDict();
         d.setDictType(dictType);
@@ -173,6 +272,16 @@ public class SysService {
         return d;
     }
 
+    /**
+     * <p>更新字典</p>
+     *
+     * @param did       字典 ID (必填)
+     * @param dictLabel 字典标签 (可选)
+     * @param color     颜色 (可选)
+     * @param sortOrder 排序 (可选)
+     * @param status    状态 (可选)
+     * @return SysDict
+     */
     public SysDict updateDict(Long did, String dictLabel, String color, Integer sortOrder, String status) {
         SysDict d = dictMapper.selectById(did);
         if (d == null) throw new BizException("字典不存在");
@@ -185,6 +294,11 @@ public class SysService {
         return d;
     }
 
+    /**
+     * <p>软删除字典 (is_deleted=1)</p>
+     *
+     * @param did 字典 ID (必填)
+     */
     public void deleteDict(Long did) {
         SysDict d = dictMapper.selectById(did);
         if (d == null) throw new BizException("字典不存在");
@@ -193,6 +307,12 @@ public class SysService {
         dictMapper.updateById(d);
     }
 
+    /**
+     * <p>查询字典项列表 (按 sort_order 升序)</p>
+     *
+     * @param dictId 字典 ID (必填)
+     * @return SysDictItem 列表
+     */
     public List<SysDictItem> listDictItems(Long dictId) {
         return dictItemMapper.selectList(new QueryWrapper<SysDictItem>()
                 .eq("dict_id", dictId)
@@ -200,6 +320,16 @@ public class SysService {
                 .orderByAsc("sort_order"));
     }
 
+    /**
+     * <p>创建字典项 (默认 status=1, sort_order=0)</p>
+     *
+     * @param dictId    字典 ID (必填)
+     * @param itemCode  项编码 (必填)
+     * @param itemName  项名
+     * @param itemValue 项值
+     * @param sortOrder 排序 (默认 0)
+     * @return SysDictItem
+     */
     public SysDictItem createDictItem(Long dictId, String itemCode, String itemName, String itemValue, Integer sortOrder) {
         SysDictItem item = new SysDictItem();
         item.setDictId(dictId);
@@ -215,6 +345,11 @@ public class SysService {
         return item;
     }
 
+    /**
+     * <p>软删除字典项 (is_deleted=1)</p>
+     *
+     * @param itemId 字典项 ID (必填)
+     */
     public void deleteDictItem(Long itemId) {
         SysDictItem item = dictItemMapper.selectById(itemId);
         if (item == null) throw new BizException("字典项不存在");
@@ -223,7 +358,16 @@ public class SysService {
         dictItemMapper.updateById(item);
     }
 
-    /** 修复 Python 端缺失的 PUT /dict-items/{iid} 端点 */
+    /**
+     * <p>更新字典项 (修复 Python 端缺失的 PUT /dict-items/{iid} 端点)</p>
+     *
+     * @param itemId    字典项 ID (必填)
+     * @param itemName  项名 (可选)
+     * @param itemValue 项值 (可选)
+     * @param sortOrder 排序 (可选)
+     * @param status    状态 (可选)
+     * @return SysDictItem
+     */
     public SysDictItem updateDictItem(Long itemId, String itemName, String itemValue, Integer sortOrder, Integer status) {
         SysDictItem item = dictItemMapper.selectById(itemId);
         if (item == null) throw new BizException("字典项不存在");

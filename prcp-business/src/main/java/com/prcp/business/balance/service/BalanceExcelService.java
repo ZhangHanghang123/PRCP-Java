@@ -16,10 +16,26 @@ import java.math.BigDecimal;
 import java.util.*;
 
 /**
- * 资产负债表 Excel 导入导出
+ * <p>资产负债表 Excel 导入导出</p>
  *
- * @author WorkBuddy Agent
- * @date 2026-09-27
+ * <p>核心职责:
+ * <ol>
+ *   <li>按方案 × 月份 × 7 度量导出 Excel 总表</li>
+ *   <li>EasyExcel 流式读取 Excel 内容</li>
+ *   <li>按 node_code 编码匹配实现 upsert</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>导出度量集: begin_balance/current_amount/avg_balance/interest_rate/interest_amount/capital_ratio/risk_weight</li>
+ *   <li>软删除: is_deleted=0 的节点/数据才纳入</li>
+ *   <li>矩阵 Excel 暂不支持导入, 提示用户用后端 upsert API</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Slf4j
 @Service
@@ -38,7 +54,15 @@ public class BalanceExcelService {
             new String[]{"risk_weight",     "风险权重(%)"});
 
     /**
-     * 导出：方案 × 月份 × 7 度量 Excel
+     * <p>导出方案 × 月份 × 7 度量的 Excel 总表</p>
+     *
+     * <p>行 = 账户册节点 (按 sort_order/path 排序), 列 = 月份 (startDate~endDate 区间) × 7 度量</p>
+     *
+     * @param schemeId 方案 ID (必填)
+     * @param startDate 起始月份 yyyy-MM-dd (必填, 自动取当月第一天)
+     * @param endDate   结束月份 yyyy-MM-dd (必填, 自动取当月第一天)
+     * @return xlsx 字节流 (含标题行 + 2 级表头 + 数据行)
+     * @throws Exception 当 EasyExcel 写出失败时
      */
     public byte[] exportXlsx(Long schemeId, String startDate, String endDate) throws Exception {
         if (schemeId == null) throw BizException.badRequest("scheme_id 必填");
@@ -150,7 +174,13 @@ public class BalanceExcelService {
     }
 
     /**
-     * 导入：EasyExcel 流式读 + 按 code + month upsert
+     * <p>导入 Excel (EasyExcel 流式读取)</p>
+     *
+     * <p>当前实现暂不支持矩阵 Excel 导入 (无月份表头信息), 返回统计 + 错误明细</p>
+     *
+     * @param file 上传的 .xlsx 文件 (必填, 仅支持 xlsx 格式)
+     * @return 包含 inserted/updated/skipped/errors 的响应 Map
+     * @throws Exception 当 EasyExcel 读取失败时
      */
     public R<Map<String, Object>> importXlsx(MultipartFile file) throws Exception {
         if (file == null || file.isEmpty()) throw BizException.badRequest("文件不能为空");

@@ -8,12 +8,33 @@ import org.apache.ibatis.annotations.Select;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * <p>Mapper: prcp_nim_param 表的 SQL 访问层</p>
+ *
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>query(...) - 列表查询 (带筛选), JOIN prcp_coa_scheme 取 scheme_name</li>
+ *   <li>listOptionsRaw - 下拉选项 (UNION ALL: scheme/node/operator/date)</li>
+ * </ul>
+ * </p>
+ *
+ * <p>字段特点: isInterestAsset + assetRate + assetOperator + assetCategory, isInterestLiability 对称结构。</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ */
 @Mapper
 public interface NimParamMapper extends BaseMapper<NimParamEntity> {
 
     /**
-     * 列表查询（JOIN prcp_coa_scheme 取 scheme_name），按 data_date DESC + scheme_code + node_code 排序
-     * 默认排除已软删（p.is_deleted=0）
+     * <p>列表查询 (JOIN prcp_coa_scheme 取 scheme_name), 按 data_date DESC + scheme_code + node_code 排序</p>
+     * <p>默认排除已软删 (p.is_deleted=0)</p>
+     *
+     * @param schemeId 方案 ID (可选, 类型 Integer)
+     * @param nodeId   节点 ID (可选, 类型 Integer)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @param keyword  模糊搜索关键字 (节点编码/名称/规则说明)
+     * @return 行 Map 列表, 最多 5000 条
      */
     @Select({
         "<script>",
@@ -48,7 +69,15 @@ public interface NimParamMapper extends BaseMapper<NimParamEntity> {
                                     @Param("keyword") String keyword);
 
     /**
-     * 下拉选项：账户册方案 + 该方案下的节点 + NIM_OPERATOR 字典 + 历史数据日期
+     * <p>下拉选项: UNION ALL 一把取齐 4 类</p>
+     * <ul>
+     *   <li>_type='scheme' - 账户册方案 ACTIVE</li>
+     *   <li>_type='node' - 全部 ACTIVE 节点</li>
+     *   <li>_type='operator' - NIM_OPERATOR 字典</li>
+     *   <li>_type='date' - 已存在补录日期 (近 60 条)</li>
+     * </ul>
+     *
+     * @return 统一字段格式的合并结果, 用 _type 区分类型
      */
     @Select({
         "<script>",

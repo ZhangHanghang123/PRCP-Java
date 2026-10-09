@@ -24,6 +24,34 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * <p>报表模板 Service (Report + Item + Value)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>报表模板 CRUD (含 item_count 自动同步)</li>
+ *   <li>表项 CRUD (树形结构, 自动算 item_level/path)</li>
+ *   <li>批量增删改 (按 path 前缀级联删除)</li>
+ *   <li>按月试算 (按 coa_node_ids 聚合 prcp_data_basic.orig_m1)</li>
+ *   <li>历史值查询 + 按报表预览</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>软删除: is_deleted=1, 不物理删除</li>
+ *   <li>表项层级: L1=大类, L2=中类, L3=账户; path = "/code1/code2/..."</li>
+ *   <li>批量删除: 按 path 前缀, 含自身 + 所有子节点</li>
+ *   <li>coa_node_ids: JSON 数组, 引用 prcp_data_basic.id (不是 prcp_coa_node.id)</li>
+ *   <li>试算来源: source='CALC', 聚合 orig_m1 求和</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.report.mapper.RptMapper
+ * @see com.prcp.business.report.entity.RptReport
+ */
 @Service
 @RequiredArgsConstructor
 public class RptService extends ServiceImpl<RptMapper, RptReport> {
@@ -33,10 +61,24 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
     private final RptValueMapper rptValueMapper;
     private final NamedParameterJdbcTemplate jdbc;
 
+    /**
+     * <p>查询报表列表 (按 reportType/schemeId/keyword 过滤)</p>
+     *
+     * @param reportType 报表类型 (可选)
+     * @param schemeId   方案 ID (可选)
+     * @param keyword    关键字 (可选)
+     * @return R.ok(List)
+     */
     public R<List<Map<String, Object>>> listReports(String reportType, Long schemeId, String keyword) {
         return R.ok(rptMapper.listReports(reportType, schemeId, keyword));
     }
 
+    /**
+     * <p>创建报表 (默认 item_count=0, status='ACTIVE')</p>
+     *
+     * @param r 报表实体 (reportCode/reportName 必填)
+     * @return R.ok(r) 或 R.fail
+     */
     public R<?> create(RptReport r) {
         if (r.getReportCode() == null || r.getReportCode().isEmpty())
             throw BizException.badRequest("report_code 不能为空");
@@ -49,6 +91,13 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
         return ok ? R.ok(r) : R.fail("创建失败");
     }
 
+    /**
+     * <p>更新报表</p>
+     *
+     * @param id 报表 ID (必填)
+     * @param r  待更新的字段
+     * @return R.ok() 或 R.fail; 不存在时抛 notFound
+     */
     public R<?> update(Long id, RptReport r) {
         if (rptMapper.selectById(id) == null) throw BizException.notFound("报表不存在");
         r.setId(id);
@@ -56,6 +105,12 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
         return ok ? R.ok() : R.fail("更新失败");
     }
 
+    /**
+     * <p>软删除报表 (is_deleted=1)</p>
+     *
+     * @param id 报表 ID (必填)
+     * @return R.ok() 或 R.fail; 不存在时抛 notFound
+     */
     public R<?> softDelete(Long id) {
         if (rptMapper.selectById(id) == null) throw BizException.notFound("报表不存在");
         RptReport upd = new RptReport();
@@ -66,13 +121,23 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
         return ok ? R.ok() : R.fail("删除失败");
     }
 
-    // ============== 表项 ==============
-
+    /**
+     * <p>查询报表表项 (树形结构)</p>
+     *
+     * @param reportId 报表 ID (必填)
+     * @return R.ok(List) 树形结构 (含 children)
+     */
     public R<List<Map<String, Object>>> listItems(Long reportId) {
         if (reportId == null) throw BizException.badRequest("report_id 不能为空");
         return R.ok(rptMapper.treeItems(reportId));
     }
 
+    /**
+     * <p>创建表项 (自动算 item_level/path + 同步报表 item_count)</p>
+     *
+     * @param item 表项实体 (reportId/itemCode/itemName 必填, parentId 可选)
+     * @return R.ok(item) 或 R.fail
+     */
     public R<?> createItem(RptItem item) {
         if (item.getReportId() == null) throw BizException.badRequest("report_id 不能为空");
         if (item.getItemCode() == null || item.getItemCode().isEmpty())
@@ -96,6 +161,13 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
         return ok ? R.ok(item) : R.fail("创建失败");
     }
 
+    /**
+     * <p>更新表项 (强制清空 itemLevel/path/parentId 防止破坏树)</p>
+     *
+     * @param id   表项 ID (必填)
+     * @param item 待更新的字段
+     * @return R.ok() 或 R.fail; 不存在时抛 notFound
+     */
     public R<?> updateItem(Long id, RptItem item) {
         if (rptItemMapper.selectById(id) == null) throw BizException.notFound("表项不存在");
         item.setId(id);
@@ -106,6 +178,12 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
         return ok ? R.ok() : R.fail("更新失败");
     }
 
+    /**
+     * <p>软删除表项 (有子项时禁止删除 + 同步报表 item_count)</p>
+     *
+     * @param id 表项 ID (必填)
+     * @return R.ok() 或 R.fail; 不存在时抛 notFound
+     */
     public R<?> deleteItem(Long id) {
         RptItem existing = rptItemMapper.selectById(id);
         if (existing == null) throw BizException.notFound("表项不存在");
@@ -133,15 +211,18 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
     }
 
     /**
-     * 批量新增 + 修改 + 删除（对齐 Python routers/reports.py batch_items）
+     * <p>批量新增 + 修改 + 删除 (对齐 Python routers/reports.py batch_items)</p>
      *
-     * 入参：report_id（必填，Query）+ body {create: [...], update: [...], delete_ids: [...]}
-     *   - create[i]：item_code + item_name + parent_id（可选）+ ... → 自动算 path/level
-     *   - update[i]：{id, ...任意可改字段} → 动态 SET（coa_node_ids 自动 JSON 序列化）
-     *   - delete_ids[i]：按 path 前缀软删除（含自身 + 所有子节点）
+     * <p>入参: report_id (必填, Query) + body {create: [...], update: [...], delete_ids: [...]}</p>
+     * <ul>
+     *   <li>create[i]: item_code + item_name + parent_id (可选) + ... → 自动算 path/level</li>
+     *   <li>update[i]: {id, ...任意可改字段} → 动态 SET (coa_node_ids 自动 JSON 序列化)</li>
+     *   <li>delete_ids[i]: 按 path 前缀软删除 (含自身 + 所有子节点)</li>
+     * </ul>
      *
-     * 返回：{ok:true, created, updated, deleted}
-     * 副作用：增量调整 prcp_rpt_report.item_count（created - deleted）
+     * @param reportId 报表 ID (必填)
+     * @param body     含 create/update/delete_ids 三个列表
+     * @return R.ok(Map.of("ok"/"created"/"updated"/"deleted")); 副作用: 增量调整 item_count
      */
     @Transactional
     public R<Map<String, Object>> batchItems(Long reportId, Map<String, Object> body) {
@@ -284,21 +365,16 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
 
     private static String toStr(Object o) { return o == null ? null : o.toString(); }
 
-    // ============== 按月试算（trial-calculate）==============
-
     /**
-     * 按月试算：对所有有 coa_node_ids 的 item，按 data_date 从 prcp_data_basic 聚合 orig_m1 写入 prcp_rpt_value
+     * <p>按月试算: 对所有有 coa_node_ids 的 item, 按 data_date 从 prcp_data_basic 聚合 orig_m1 写入 prcp_rpt_value</p>
      *
-     * 入参：
-     *   dataDate  - 必填，yyyy-MM-dd
-     *   category  - 可选（FINANCIAL/SCALE/...），过滤 item.category
-     *   reportId  - 可选，限定到某报表
+     * <p>coa_node_ids 含义: JSON 数组, 引用 prcp_data_basic.id (不是 prcp_coa_node.id)</p>
+     * <p>设计意图: prcp_data_basic 每一行 = 节点 × 时点 × 当前余额; 报表 item 通过引用若干 data_basic.id 实现聚合</p>
      *
-     * coa_node_ids 含义：JSON 数组，引用 prcp_data_basic.id（不是 prcp_coa_node.id）
-     *   设计意图：prcp_data_basic 每一行 = 节点 × 时点 × 当前余额；
-     *   报表 item 通过引用若干 data_basic.id 实现聚合。
-     *
-     * 返回：{ count, data_date, results:[{item_id, item_code, item_name, value, action, matched}] }
+     * @param dataDate 数据日期 yyyy-MM-dd (必填)
+     * @param category 大类 (FINANCIAL/SCALE/..., 可选) 过滤 item.category
+     * @param reportId 报表 ID (可选) 限定到某报表
+     * @return R.ok(Map.of("count"/"created"/"updated"/"data_date"/"results", ...))
      */
     @Transactional
     public R<Map<String, Object>> calcByMonth(String dataDate, String category, Long reportId) {
@@ -403,7 +479,11 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
     }
 
     /**
-     * 列某 item 的所有历史值（对齐 Python /data-maint/values）
+     * <p>列某 item 的所有历史值 (对齐 Python /data-maint/values)</p>
+     *
+     * @param itemId   表项 ID (必填)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @return R.ok(List)
      */
     public R<List<Map<String, Object>>> listValues(Long itemId, String dataDate) {
         if (itemId == null) throw BizException.badRequest("item_id 必填");
@@ -411,7 +491,11 @@ public class RptService extends ServiceImpl<RptMapper, RptReport> {
     }
 
     /**
-     * 按 report_id + data_date 取试算结果（preview）
+     * <p>按 report_id + data_date 取试算结果 (preview)</p>
+     *
+     * @param reportId 报表 ID (必填)
+     * @param dataDate 数据日期 yyyy-MM-dd (必填)
+     * @return R.ok(List)
      */
     public R<List<Map<String, Object>>> previewByReport(Long reportId, String dataDate) {
         if (reportId == null) throw BizException.badRequest("report_id 必填");

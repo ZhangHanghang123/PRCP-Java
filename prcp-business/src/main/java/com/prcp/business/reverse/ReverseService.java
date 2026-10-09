@@ -35,11 +35,31 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 反算服务：CRUD + 异步执行 + 启发式求解器
- * 对位 Python app/services/reverse_calc_engine.py
+ * <p>反算 Service: CRUD + 异步执行 + 启发式求解器</p>
  *
- * @author WorkBuddy Agent
- * @date 2026-09-26
+ * <p>核心职责:
+ * <ol>
+ *   <li>方案 CRUD (snake_case/camelCase 双兼容)</li>
+ *   <li>目标约束 CRUD (constraint_type: GE/LE/EQ)</li>
+ *   <li>Run CRUD + 选项 (模型/KPI/Run 列表/日志/结果)</li>
+ *   <li>异步执行 (CompletableFuture + ExecutorService 2 线程池)</li>
+ *   <li>启发式求解器 (HEURISTIC: 按 KPI 类型调整 + 2% 增长趋势)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>软删除: is_deleted=1, 不物理删除 (含级联 target/run)</li>
+ *   <li>run 状态机: PENDING → RUNNING → SUCCESS/FAILED/CANCELLED</li>
+ *   <li>run_log/result 表无 is_deleted 字段, 永久保留日志; result 删除时硬删</li>
+ *   <li>算法: HEURISTIC (默认) + CVXPY_LP (简化版)</li>
+ *   <li>求解指标: NIM 调整资产端, LCR 调整 HQLA, 平滑度 + KPI 偏差 = optimal_value</li>
+ *   <li>线程池: Executors.newFixedThreadPool(2)</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Slf4j
 @Service
@@ -55,7 +75,13 @@ public class ReverseService {
 
     private static final ExecutorService EXEC = Executors.newFixedThreadPool(2);
 
-    // ========== Scheme CRUD ==========
+    /**
+     * <p>列出反算方案 (分页 LIMIT 200 + 关联方案/模型展示名)</p>
+     *
+     * @param keyword 关键字 (匹配 scheme_code/name, 可选)
+     * @param status  状态 (可选)
+     * @return R.ok(Map.of("items", list)); 含 targetCount/runCount/coaCode/coaName/modelCode/modelName 等
+     */
     public R<Map<String, Object>> listSchemes(String keyword, String status) {
         StringBuilder sql = new StringBuilder(
                 "SELECT s.id, s.scheme_code AS schemeCode, s.scheme_name AS schemeName, s.scheme_type AS schemeType,"
@@ -85,7 +111,10 @@ public class ReverseService {
     }
 
     /**
-     * 单方案详情（按 id）：返回 snake_case + 关联展示名（与 list 接口结构兼容）
+     * <p>单方案详情 (按 id): 返回 snake_case + 关联展示名 (与 list 接口结构兼容)</p>
+     *
+     * @param sid 方案 ID (必填)
+     * @return R.ok(Map); 不存在或已删除时抛 notFound
      */
     public R<Map<String, Object>> getScheme(Long sid) {
         if (sid == null) throw BizException.badRequest("id 必填");
@@ -108,6 +137,12 @@ public class ReverseService {
         return R.ok(rows.get(0));
     }
 
+    /**
+     * <p>创建方案 (校验 scheme_code 唯一 + 默认 status='DRAFT', algorithm='HEURISTIC', horizon=24)</p>
+     *
+     * @param body 含 scheme_code/scheme_name/coa_scheme_id/data_date + algorithm/model_id/horizon_months/description/status
+     * @return R.ok(Map.of("id")); 字段缺失或 scheme_code 重复时抛 badRequest
+     */
     @Transactional
     public R<Map<String, Object>> createScheme(Map<String, Object> body) {
         if (body.get("scheme_code") == null) throw BizException.badRequest("scheme_code 必填");
@@ -131,6 +166,13 @@ public class ReverseService {
         return R.ok(Collections.singletonMap("id", s.getId()));
     }
 
+    /**
+     * <p>更新方案 (按字段选择性更新)</p>
+     *
+     * @param sid  方案 ID (必填)
+     * @param body 待更新字段
+     * @return R.ok(Map.of("id")); 不存在或已删除时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> updateScheme(Long sid, Map<String, Object> body) {
         if (sid == null) throw BizException.badRequest("id 必填");
@@ -145,6 +187,12 @@ public class ReverseService {
         return R.ok(Collections.singletonMap("id", sid));
     }
 
+    /**
+     * <p>软删除方案 (级联软删 target + run)</p>
+     *
+     * @param sid 方案 ID (必填)
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> deleteScheme(Long sid) {
         if (sid == null) throw BizException.badRequest("id 必填");
@@ -176,7 +224,12 @@ public class ReverseService {
         return s;
     }
 
-    // ========== Target CRUD ==========
+    /**
+     * <p>查询目标约束列表 (按 schemeId 过滤 + 关联 KPI 展示名)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @return R.ok(Map.of("items", list)) LIMIT 500
+     */
     public R<Map<String, Object>> listTargets(Long schemeId) {
         StringBuilder sql = new StringBuilder(
                 "SELECT t.id, t.scheme_id AS schemeId, t.kpi_id AS kpiId, t.kpi_code AS kpiCode,"
@@ -196,6 +249,12 @@ public class ReverseService {
         return R.ok(Collections.singletonMap("items", items));
     }
 
+    /**
+     * <p>创建目标约束 (默认 constraint_type='GE')</p>
+     *
+     * @param body 含 scheme_id/kpi_id/kpi_code/target_name/target_value + constraint_type/weight/horizon_month/sort_order/description
+     * @return R.ok(Map.of("id"))
+     */
     @Transactional
     public R<Map<String, Object>> createTarget(Map<String, Object> body) {
         ReverseTarget t = parseTarget(body);
@@ -206,6 +265,13 @@ public class ReverseService {
         return R.ok(Collections.singletonMap("id", t.getId()));
     }
 
+    /**
+     * <p>更新目标约束</p>
+     *
+     * @param tid  目标 ID (必填)
+     * @param body 待更新字段
+     * @return R.ok(Map.of("id")); 不存在或已删除时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> updateTarget(Long tid, Map<String, Object> body) {
         if (tid == null) throw BizException.badRequest("id 必填");
@@ -220,6 +286,12 @@ public class ReverseService {
         return R.ok(Collections.singletonMap("id", tid));
     }
 
+    /**
+     * <p>软删除目标约束 (is_deleted=1)</p>
+     *
+     * @param tid 目标 ID (必填)
+     * @return R.ok(Map.of("ok", true))
+     */
     @Transactional
     public R<Map<String, Object>> deleteTarget(Long tid) {
         if (tid == null) throw BizException.badRequest("id 必填");
@@ -250,7 +322,9 @@ public class ReverseService {
 
     // ========== Run CRUD ==========
     /**
-     * 模型选项（id/code/name）
+     * <p>模型选项 (id/code/name/type, LIMIT 100)</p>
+     *
+     * @return 模型列表
      */
     public List<Map<String, Object>> listModelsForOption() {
         try {
@@ -263,7 +337,9 @@ public class ReverseService {
     }
 
     /**
-     * KPI 选项（id/code/name）
+     * <p>KPI 选项 (id/code/name/formula/category, LIMIT 500)</p>
+     *
+     * @return R.ok(Map.of("items", list)) 异常时返回空列表
      */
     public R<Map<String, Object>> kpiOptions() {
         try {
@@ -276,6 +352,14 @@ public class ReverseService {
         }
     }
 
+    /**
+     * <p>查询 Run 列表 (按 schemeId/status 过滤, LIMIT 50/200)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param status   状态 (可选)
+     * @param limit    返回条数 (上限 200, 默认 50)
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> listRuns(Long schemeId, String status, Integer limit) {
         StringBuilder sql = new StringBuilder(
                 "SELECT r.id, r.run_code AS runCode, r.scheme_id AS schemeId, r.status, r.progress,"
@@ -295,6 +379,12 @@ public class ReverseService {
         return R.ok(Collections.singletonMap("items", items));
     }
 
+    /**
+     * <p>创建 Run 记录 (默认 status='PENDING', progress=0, run_code='RR{timestamp}')</p>
+     *
+     * @param body 含 scheme_id (必填) + description (可选)
+     * @return R.ok(Map.of("id"/"run_code"))
+     */
     @Transactional
     public R<Map<String, Object>> createRun(Map<String, Object> body) {
         Object sid = body.get("scheme_id");
@@ -315,6 +405,12 @@ public class ReverseService {
         return R.ok(resp);
     }
 
+    /**
+     * <p>软删除 Run + 硬删 prcp_reverse_result (run_log 永久保留)</p>
+     *
+     * @param rid Run ID (必填)
+     * @return R.ok(Map.of("ok", true))
+     */
     @Transactional
     public R<Map<String, Object>> deleteRun(Long rid) {
         if (rid == null) throw BizException.badRequest("id 必填");
@@ -324,12 +420,25 @@ public class ReverseService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
+    /**
+     * <p>取消 Run (PENDING/RUNNING 状态可取消)</p>
+     *
+     * @param rid Run ID (必填)
+     * @return R.ok(Map.of("ok", true))
+     */
     public R<Map<String, Object>> cancelRun(Long rid) {
         if (rid == null) throw BizException.badRequest("id 必填");
         jdbc.update("UPDATE prcp_reverse_run SET status='CANCELLED', end_at=NOW() WHERE id=? AND status IN ('PENDING','RUNNING')", rid);
         return R.ok(Collections.singletonMap("ok", true));
     }
 
+    /**
+     * <p>查询 Run 日志 (增量 sinceId, LIMIT 500)</p>
+     *
+     * @param rid     Run ID (必填)
+     * @param sinceId 增量起点日志 ID (可选, 默认 0)
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> runLogs(Long rid, Long sinceId) {
         if (rid == null) throw BizException.badRequest("id 必填");
         String sql = "SELECT id, run_id AS runId, log_level AS logLevel, log_message AS logMessage, progress, created_at AS createdAt"
@@ -339,6 +448,12 @@ public class ReverseService {
         return R.ok(Collections.singletonMap("items", items));
     }
 
+    /**
+     * <p>查询 Run 结果 (含 run/metrics/optimal_value/items, LIMIT 5000)</p>
+     *
+     * @param rid Run ID (必填)
+     * @return R.ok(Map.of("run"/"metrics"/"optimal_value"/"items", ...)); 不存在时抛 notFound
+     */
     public R<Map<String, Object>> runResult(Long rid) {
         if (rid == null) throw BizException.badRequest("id 必填");
         ReverseRun run = runMapper.selectById(rid);
@@ -357,7 +472,12 @@ public class ReverseService {
         return R.ok(resp);
     }
 
-    // ========== 异步执行 ==========
+    /**
+     * <p>启动异步 Run (PENDING → RUNNING, CompletableFuture 提交 EXEC 线程池)</p>
+     *
+     * @param rid Run ID (必填)
+     * @return R.ok(Map.of("id"/"status", "RUNNING")); 不存在时抛 notFound
+     */
     public R<Map<String, Object>> startRun(Long rid) {
         if (rid == null) throw BizException.badRequest("id 必填");
         ReverseRun run = runMapper.selectById(rid);

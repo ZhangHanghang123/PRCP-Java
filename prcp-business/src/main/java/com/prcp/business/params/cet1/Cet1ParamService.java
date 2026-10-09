@@ -11,13 +11,31 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * CET1 参数补录 业务逻辑
+ * <p>CET1 (核心一级资本) 参数补录 Service</p>
  *
- * 关键点：
- *  1. 主键 = {scheme_code}_{node_code}_{YYYYMMDD}  （手工生成，覆盖前端传入的 id）
- *  2. 新增时 node_name 为空则从 prcp_coa_node 自动补
- *  3. 更新走 partial update：scheme/node/date 不允许改动，只更新分子/RWA/规则/状态
- *  4. 软删：is_deleted = 1
+ * <p>核心职责:
+ * <ol>
+ *   <li>列表查询 (4 个过滤条件)</li>
+ *   <li>下拉选项 (方案/节点/操作符/数据日期)</li>
+ *   <li>新增 (自动生成主键 + 自动补 node_name)</li>
+ *   <li>部分更新 (scheme/node/date 不允许改动)</li>
+ *   <li>软删除</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>复合主键: {scheme_code}_{node_code}_{YYYYMMDD} (手工生成, 覆盖前端传入的 id)</li>
+ *   <li>软删除: is_deleted=1, 不物理删除</li>
+ *   <li>默认值: is_deleted=0, status='ACTIVE', is_numerator=0, operator='+', is_rwa=0</li>
+ *   <li>node_name 缺失时自动从 prcp_coa_node 补</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.params.cet1.Cet1ParamMapper
+ * @see com.prcp.business.params.cet1.Cet1ParamEntity
  */
 @Service
 @RequiredArgsConstructor
@@ -27,7 +45,15 @@ public class Cet1ParamService {
 
     private static final DateTimeFormatter YYYYMMDD = DateTimeFormatter.ofPattern("yyyyMMdd");
 
-    /** 列表查询 — 返回 {items, total} 结构与 Python 保持一致 */
+    /**
+     * <p>列表查询 (返回 {items, total} 结构与 Python 保持一致)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param nodeId   节点 ID (可选)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @param keyword  关键字 (匹配 节点编码/名称/规则说明, 可选)
+     * @return Map.of("items", list, "total", list.size())
+     */
     public Map<String, Object> query(Long schemeId, Long nodeId, String dataDate, String keyword) {
         // 空串视为无过滤 → 传 null（避免 MySQL 报 Incorrect DATE value: ''）
         String dd = (dataDate == null || dataDate.isEmpty()) ? null : dataDate;
@@ -39,7 +65,11 @@ public class Cet1ParamService {
         return resp;
     }
 
-    /** 下拉选项：合并 schemes / nodes / operators / dataDates */
+    /**
+     * <p>下拉选项 (合并 schemes / nodes / operators / dataDates)</p>
+     *
+     * @return Map 含 schemes/nodes/operators/data_dates 四个列表
+     */
     public Map<String, Object> listOptions() {
         Map<String, Object> opts = new LinkedHashMap<>();
         opts.put("schemes",    mapper.listSchemes());
@@ -49,7 +79,12 @@ public class Cet1ParamService {
         return opts;
     }
 
-    /** 新增：自动生成 id、自动补 node_name */
+    /**
+     * <p>新增: 自动生成主键 {scheme_code}_{node_code}_{YYYYMMDD} + 自动补 node_name + 默认值填充</p>
+     *
+     * @param e CET1 参数实体 (schemeId/schemeCode/nodeId/nodeCode/dataDate 必填)
+     * @return 创建后的实体 (含 ID)
+     */
     public Cet1ParamEntity create(Cet1ParamEntity e) {
         if (e.getSchemeId() == null)                       throw new BizException("schemeId 必填");
         if (e.getSchemeCode() == null || e.getSchemeCode().isEmpty()) throw new BizException("schemeCode 必填");
@@ -82,7 +117,13 @@ public class Cet1ParamService {
         return e;
     }
 
-    /** 更新：只更新非空字段（不允许改 scheme/node/date） */
+    /**
+     * <p>更新: 只更新非空字段 (scheme/node/date 不允许改动)</p>
+     *
+     * @param id 主键 ID (必填, 由 create 时生成)
+     * @param e  待更新字段 (分子/RWA/规则/状态等)
+     * @return 更新后的实体
+     */
     public Cet1ParamEntity update(String id, Cet1ParamEntity e) {
         if (id == null || id.isEmpty()) throw new BizException("id 不能为空");
 
@@ -103,7 +144,11 @@ public class Cet1ParamService {
         return exist;
     }
 
-    /** 软删 */
+    /**
+     * <p>软删除 (is_deleted=1)</p>
+     *
+     * @param id 主键 ID (必填)
+     */
     public void delete(String id) {
         Cet1ParamEntity exist = mapper.selectById(id);
         if (exist == null) throw new BizException("记录不存在");

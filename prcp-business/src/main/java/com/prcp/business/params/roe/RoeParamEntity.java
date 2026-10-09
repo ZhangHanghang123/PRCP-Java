@@ -11,13 +11,23 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * ROE 参数补录
- * <p>对应表 prcp_roe_param</p>
- * <p>字段命名：net_profit_*（净利润 · 分子）+ net_asset_*（净资产 · 分母）</p>
- * <p>ID 规则：{scheme_code}_{node_code}_{YYYYMMDD}</p>
+ * <p>实体类: 映射数据库表 prcp_roe_param</p>
  *
- * @author PRCP WorkBuddy Agent
- * @date 2026-10-08
+ * <p>字段说明:
+ * <ul>
+ *   <li>id - 复合主键 {scheme_code}_{node_code}_{YYYYMMDD}</li>
+ *   <li>schemeId / schemeCode - 方案 ID 和编码</li>
+ *   <li>nodeId / nodeCode / nodeName - 科目节点三件套</li>
+ *   <li>dataDate - 数据日期</li>
+ *   <li>isNetProfit + netProfitSymbol + netProfitFactor + netProfitCategory - 净利润四件套 (分子)</li>
+ *   <li>isNetAsset + netAssetSymbol + netAssetFactor + netAssetCategory - 净资产四件套 (分母)</li>
+ *   <li>currentBalance - 期末余额</li>
+ *   <li>isDeleted - 软删除标记</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Data
 @TableName("prcp_roe_param")

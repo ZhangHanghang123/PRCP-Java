@@ -8,18 +8,36 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 基础数据 mapper
- * - 64+64 桶结构（orig_m1..m60 + orig_y10/y15/y20/y30 + rem_m1..m60 + rem_y10/y15/y20/y30）
- * - 列由 BasicDataBuckets 动态生成，与 Python 版 buckets.py 完全对齐
- * - 7 度量字段：asf_rsf/hqla_factor/current_balance/avg_balance/weighted_rate/interest_amount/risk_weight
- * - 4 元组唯一键 (coa_node_id, data_date, date_offset, offset_unit)
+ * <p>Mapper: prcp_data_basic 表的 SQL 访问层 (基础数据 64+64 桶结构)</p>
+ *
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>list - 列表查询 (带方案/日期/类别/关键词过滤, 全 64 桶 + 7 度量)</li>
+ *   <li>dates - 可用日期 (带方案过滤)</li>
+ *   <li>matrix - 矩阵查询 (节点 × 桶 + 7 度量)</li>
+ *   <li>findId - upsert 前检查 4 元组是否存在</li>
+ *   <li>selectNodeMeta - 取账户册节点元数据 (upsert 自动补全)</li>
+ *   <li>listBySchemeMatrix - by-scheme-matrix 数据查询</li>
+ *   <li>listNodesByScheme - 取方案下所有节点 (按 path, sort_order 排序)</li>
+ *   <li>updateByDynamic / insertByDynamic - 动态 update / insert (XML 实现)</li>
+ *   <li>softDeleteById / softDeleteByIds - 逻辑删除</li>
+ * </ul>
+ * </p>
+ *
+ * <p>桶结构: orig_m1..m60 + orig_y10/y15/y20/y30 + rem_m1..m60 + rem_y10/y15/y20/y30 (共 128 桶)</p>
+ * <p>列由 BasicDataBuckets 动态生成, 与 Python 版 buckets.py 完全对齐</p>
+ * <p>7 度量字段: asf_rsf / hqla_factor / current_balance / avg_balance / weighted_rate / interest_amount / risk_weight</p>
+ * <p>4 元组唯一键: (coa_node_id, data_date, date_offset, offset_unit)</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Mapper
 public interface BasicDataMapper {
 
     /**
-     * 列表查询（带方案/日期/类别/关键词过滤）
-     * SELECT 全 64 桶 + 7 度量字段
+     * <p>列表查询 (带方案/日期/类别/关键词过滤)</p>
+     * <p>SELECT 全 64 桶 orig + 64 桶 rem + 7 度量字段</p>
      */
     String LIST_COLUMNS = "d.id, d.data_date AS dataDate, d.coa_node_id AS coaNodeId,"
         + " d.node_code AS nodeCode, d.node_name AS nodeName,"
@@ -31,6 +49,19 @@ public interface BasicDataMapper {
         + " d.weighted_rate AS weightedRate, d.interest_amount AS interestAmount,"
         + " d.risk_weight AS riskWeight, d.calc_note AS calcNote";
 
+    /**
+     * <p>列表查询 (带方案/日期/类别/关键词过滤)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param coaNodeId 节点 ID (可选)
+     * @param startDate 起始日期 yyyy-MM-dd (可选)
+     * @param endDate 结束日期 yyyy-MM-dd (可选)
+     * @param dataDate 精确日期 yyyy-MM-dd (可选)
+     * @param category 类别 ASSET/LIABILITY/EQUITY/OFF_BALANCE (可选)
+     * @param nodeKw 节点编码/名称模糊搜索 (可选)
+     * @param buckets 桶列表 (例 ["m1","m3","y10"])
+     * @return 数据行列表 (含全 128 桶别名), 最多 1000 条
+     */
     @Select({
         "<script>",
         "SELECT ", LIST_COLUMNS,
@@ -61,7 +92,12 @@ public interface BasicDataMapper {
                                    @Param("nodeKw") String nodeKw,
                                    @Param("buckets") List<String> buckets);
 
-    /** 可用日期（带方案过滤） */
+    /**
+     * <p>可用日期 (带方案过滤, 近 60 条, 按日期 DESC)</p>
+     *
+     * @param schemeId 方案 ID (可选, null 取全方案)
+     * @return data_date 字符串列表 (yyyy-MM-dd)
+     */
     @Select({
         "<script>",
         "SELECT DISTINCT CAST(d.data_date AS CHAR) AS d",
@@ -76,8 +112,8 @@ public interface BasicDataMapper {
     List<String> dates(@Param("schemeId") Long schemeId);
 
     /**
-     * 矩阵查询：节点 × 桶（8 代表桶）+ 7 度量
-     * 返回 { dates, buckets, rows: [{nodeCode, nodeName, cells: [{date, bucket, value}]}] }
+     * <p>矩阵查询常量: 节点 × 桶 (8 代表桶) + 7 度量</p>
+     * <p>返回 { dates, buckets, rows: [{nodeCode, nodeName, cells: [{date, bucket, value}]}] }</p>
      */
     String MATRIX_COLUMNS = "d.coa_node_id AS coaNodeId, n.node_code AS nodeCode, n.node_name AS nodeName,"
         + " CAST(d.data_date AS CHAR) AS dataDate, d.category, d.node_level AS nodeLevel,"
@@ -87,6 +123,15 @@ public interface BasicDataMapper {
         + " d.weighted_rate AS weightedRate, d.interest_amount AS interestAmount,"
         + " d.risk_weight AS riskWeight";
 
+    /**
+     * <p>矩阵查询 (节点 × 桶 + 7 度量)</p>
+     * <p>返回 { dates, buckets, rows: [{nodeCode, nodeName, cells: [{date, bucket, value}]}] }</p>
+     *
+     * @param schemeId      方案 ID (可选)
+     * @param dataDate      数据日期 yyyy-MM-dd (可选)
+     * @param displayBuckets 显示桶列表 (例 ["m1","m3","y10"])
+     * @return 矩阵数据行, 最多 1000 条
+     */
     @Select({
         "<script>",
         "SELECT ", MATRIX_COLUMNS,
@@ -108,7 +153,13 @@ public interface BasicDataMapper {
                                       @Param("displayBuckets") List<String> displayBuckets);
 
     /**
-     * upsert 前检查是否存在（4 元组）
+     * <p>upsert 前检查是否存在 (4 元组: coa_node_id + data_date + date_offset + offset_unit)</p>
+     *
+     * @param nodeId     节点 ID
+     * @param dataDate   数据日期
+     * @param dateOffset 日期偏移
+     * @param offsetUnit 偏移单位 (D/M/Y)
+     * @return 主键 ID, 不存在返回 null
      */
     @Select({
         "SELECT id FROM prcp_data_basic WHERE coa_node_id = #{nodeId}"
@@ -122,7 +173,10 @@ public interface BasicDataMapper {
                 @Param("offsetUnit") String offsetUnit);
 
     /**
-     * 取账户册节点元数据（用于 upsert 自动补全）
+     * <p>取账户册节点元数据 (用于 upsert 自动补全 nodeCode/nodeName/nodeLevel/parentCode/isLeaf/category)</p>
+     *
+     * @param nodeId 节点 ID
+     * @return 单行 Map, 不存在返回 null
      */
     @Select({
         "SELECT node_code AS nodeCode, node_name AS nodeName, node_level AS nodeLevel,"
@@ -132,8 +186,7 @@ public interface BasicDataMapper {
     Map<String, Object> selectNodeMeta(@Param("nodeId") Long nodeId);
 
     /**
-     * by-scheme-matrix 数据查询：取方案下某 (dataDate, dateOffset, offsetUnit) 的全部数据
-     * 返回字段：coa_node_id + 7 度量 + 全 64 桶 orig + 全 64 桶 rem
+     * <p>by-scheme-matrix 数据查询常量: coa_node_id + 7 度量 + 全 64 桶 orig + 全 64 桶 rem</p>
      */
     String BSM_COLUMNS = "d.coa_node_id AS coaNodeId,"
         + " d.asf_rsf AS asfRsf, d.hqla_factor AS hqlaFactor,"
@@ -164,8 +217,11 @@ public interface BasicDataMapper {
                                                   @Param("buckets") List<String> buckets);
 
     /**
-     * 取方案下所有节点（按 path, sort_order 排序），用于 by-scheme-matrix 视图
-     * 注：服务器 prcp_coa_node 没有 category 字段，从 node_type 推断 (ASSET/LIAB/EQUITY/OTHER)
+     * <p>取方案下所有节点 (按 path, sort_order 排序), 用于 by-scheme-matrix 视图</p>
+     * <p>注: 服务器 prcp_coa_node 没有 category 字段, 从 node_type 推断 (ASSET/LIAB/EQUITY/OTHER)</p>
+     *
+     * @param schemeId 方案 ID
+     * @return 节点 Map 列表, 字段含 coaNodeId/nodeCode/nodeName/parentId/nodeLevel/nodeType/path/sortOrder/description/category
      */
     @Select({
         "SELECT n.id AS coaNodeId, n.node_code AS nodeCode, n.node_name AS nodeName,"

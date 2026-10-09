@@ -20,6 +20,35 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
+/**
+ * <p>模拟方案 Service (Sim Scheme + Node Config + Term Ratio)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>账户册方案下拉 + 节点树</li>
+ *   <li>节点信息 (含最新余额)</li>
+ *   <li>模拟方案 CRUD (含 toggle status + 级联软删)</li>
+ *   <li>节点配置 (含期限占比整段替换 + 自动校验 100%)</li>
+ *   <li>校验全方案 term_ratios 比例合计</li>
+ *   <li>单条 term_ratio 增删改</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>复合主键: (scheme_id, coa_node_id) — 已删可复活</li>
+ *   <li>软删除: is_deleted=1, 不物理删除 (含级联 node_config + term_ratio)</li>
+ *   <li>业务占比合计必须 = 100% (容差 0.01%)</li>
+ *   <li>期限单位: 当前仅支持 MONTH (月)</li>
+ *   <li>config_node_count: 方案下有效节点配置数 (自动同步)</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.sim.mapper.SimSchemeMapper
+ * @see com.prcp.business.sim.entity.SimScheme
+ */
 @Service
 @RequiredArgsConstructor
 public class SimService {
@@ -34,7 +63,11 @@ public class SimService {
 
     private Long uid() { return 1L; }
 
-    // ============ 1. coa-schemes ============
+    /**
+     * <p>查询 ACTIVE 账户册方案 (snake_case 字段)</p>
+     *
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> listCoaSchemes() {
         List<CoaScheme> schemes = coaSchemeService.listActive().getData();
         List<Map<String, Object>> items = new ArrayList<>();
@@ -52,7 +85,12 @@ public class SimService {
         return R.ok(Collections.singletonMap("items", items));
     }
 
-    // ============ 2. coa-tree ============
+    /**
+     * <p>查询节点树 (后端组装嵌套树, 含 isLeaf 标记)</p>
+     *
+     * @param coaSchemeId 账户册方案 ID (必填)
+     * @return R.ok(Map.of("scheme_id"/"items"/"total", ...))
+     */
     public R<Map<String, Object>> coaTree(Long coaSchemeId) {
         if (coaSchemeId == null) throw BizException.badRequest("coa_scheme_id 必填");
         List<Map<String, Object>> rows = coaNodeService.listTree(coaSchemeId).getData();
@@ -110,7 +148,12 @@ public class SimService {
         }
     }
 
-    // ============ 3. node-info ============
+    /**
+     * <p>节点信息 (含节点元数据 + 最新余额)</p>
+     *
+     * @param coaNodeId 节点 ID (必填)
+     * @return R.ok(Map); 不存在时抛 notFound
+     */
     public R<Map<String, Object>> nodeInfo(Long coaNodeId) {
         if (coaNodeId == null) throw BizException.badRequest("coa_node_id 必填");
         Map<String, Object> node = coaNodeService.nodeWithLatestBalance(coaNodeId);
@@ -118,14 +161,26 @@ public class SimService {
         return R.ok(node);
     }
 
-    // ============ 4. schemes list ============
+    /**
+     * <p>查询模拟方案 (按 keyword/status/coaSchemeId 过滤)</p>
+     *
+     * @param keyword    关键字 (可选)
+     * @param status     状态 (可选)
+     * @param coaSchemeId 账户册方案 ID (可选)
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> listSchemes(String keyword, String status, Long coaSchemeId) {
         String kw = (keyword == null || keyword.isEmpty()) ? null : "%" + keyword + "%";
         List<Map<String, Object>> rows = schemeMapper.listSchemes(keyword, kw, status, coaSchemeId);
         return R.ok(Collections.singletonMap("items", rows));
     }
 
-    // ============ 5. create scheme ============
+    /**
+     * <p>创建模拟方案 (校验 coa_scheme ACTIVE, 默认 status='ACTIVE', config_node_count=0)</p>
+     *
+     * @param in 方案实体 (schemeCode/schemeName/coaSchemeId/dataDate 必填)
+     * @return R.ok(Map.of("id"/"scheme_code"/"scheme_name"/"data_date")); scheme_code 重复时抛 badRequest
+     */
     @Transactional
     public R<Map<String, Object>> createScheme(SimScheme in) {
         if (in.getSchemeCode() == null || in.getSchemeCode().isEmpty())
@@ -166,7 +221,13 @@ public class SimService {
         return R.ok(resp);
     }
 
-    // ============ 6. update scheme ============
+    /**
+     * <p>更新模拟方案 (锁定 coa_scheme_id 和 data_date 不允许改动)</p>
+     *
+     * @param sid 方案 ID (必填)
+     * @param in  待更新字段
+     * @return R.ok(Map.of("ok"/"coa_scheme_id_locked"/"data_date_locked")); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> updateScheme(Long sid, SimScheme in) {
         if (sid == null) throw BizException.badRequest("id 必填");
@@ -199,7 +260,13 @@ public class SimService {
         return R.ok(resp);
     }
 
-    // ============ 7. toggle status ============
+    /**
+     * <p>切换方案状态 (ACTIVE/INACTIVE)</p>
+     *
+     * @param sid    方案 ID (必填)
+     * @param status 新状态 (ACTIVE/INACTIVE, 必填)
+     * @return R.ok(Map.of("ok", true)); 状态值非法或方案不存在时抛错
+     */
     public R<Map<String, Object>> toggleStatus(Long sid, String status) {
         if (sid == null) throw BizException.badRequest("id 必填");
         if (!"ACTIVE".equals(status) && !"INACTIVE".equals(status))
@@ -209,7 +276,12 @@ public class SimService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============ 8. delete scheme ============
+    /**
+     * <p>软删除模拟方案 (级联软删 node_config + term_ratio)</p>
+     *
+     * @param sid 方案 ID (必填)
+     * @return R.ok(Map.of("ok"/"deleted_configs"/"deleted_ratios")); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> deleteScheme(Long sid) {
         if (sid == null) throw BizException.badRequest("id 必填");
@@ -224,7 +296,13 @@ public class SimService {
         return R.ok(resp);
     }
 
-    // ============ 9. get node-config ============
+    /**
+     * <p>查询节点配置 (含 term_ratios 子表)</p>
+     *
+     * @param schemeId 方案 ID (必填)
+     * @param coaNodeId 节点 ID (必填)
+     * @return R.ok(Map.of("exists"/"config"/"ratios"/"scheme_data_date", ...))
+     */
     public R<Map<String, Object>> getNodeConfig(Long schemeId, Long coaNodeId) {
         if (schemeId == null) throw BizException.badRequest("scheme_id 必填");
         if (coaNodeId == null) throw BizException.badRequest("coa_node_id 必填");
@@ -249,7 +327,13 @@ public class SimService {
         return R.ok(resp);
     }
 
-    // ============ 10. save node-config ============
+    /**
+     * <p>保存节点配置 (UPSERT + term_ratios 整段替换 + 校验 100% 占比)</p>
+     *
+     * @param schemeId 方案 ID (必填)
+     * @param body     含 coa_node_id/annual_growth_rate/term_unit/remark + ratios 数组
+     * @return R.ok(Map.of("ok"/"config_id"/"term_count"/"total_ratio")); 校验失败时抛 badRequest
+     */
     @Transactional
     public R<Map<String, Object>> saveNodeConfig(Long schemeId, Map<String, Object> body) {
         if (schemeId == null) throw BizException.badRequest("scheme_id 必填");
@@ -359,7 +443,12 @@ public class SimService {
         return R.ok(resp);
     }
 
-    // ============ 11. delete node-config ============
+    /**
+     * <p>软删除节点配置 (级联软删 term_ratio)</p>
+     *
+     * @param cfgId 配置 ID (必填)
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> deleteNodeConfig(Long cfgId) {
         if (cfgId == null) throw BizException.badRequest("cfg_id 必填");
@@ -374,7 +463,13 @@ public class SimService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============ 12. validateScheme 校验全方案的 term_ratios 比例合计 = 100% ============
+    /**
+     * <p>校验全方案的 term_ratios 比例合计 = 100%</p>
+     *
+     * @param schemeId 方案 ID (必填)
+     * @param body     预留 (当前未用)
+     * @return R.ok(Map.of("ok"/"checked"/"issues", ...))
+     */
     public R<Map<String, Object>> validateScheme(Long schemeId, Map<String, Object> body) {
         if (schemeId == null) throw BizException.badRequest("scheme_id 必填");
         // 查所有 active node_config 的 term_ratios
@@ -408,7 +503,13 @@ public class SimService {
         return R.ok(resp);
     }
 
-    // ============ 13. updateTermRatio 改单条 term_ratio（业务占比/利率/期限/排序） ============
+    /**
+     * <p>改单条 term_ratio (业务占比/利率/期限/排序)</p>
+     *
+     * @param rid  term_ratio ID (必填)
+     * @param body camelCase/snake_case 双兼容; business_ratio 必须在 0~100 之间
+     * @return R.ok(Map.of("ok", true)); 不存在或参数非法时抛错
+     */
     public R<Map<String, Object>> updateTermRatio(Long rid, Map<String, Object> body) {
         if (rid == null) throw BizException.badRequest("rid 必填");
         if (body == null) throw BizException.badRequest("请求体不能为空");
@@ -438,7 +539,12 @@ public class SimService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============ 14. deleteTermRatio 软删单条 term_ratio ============
+    /**
+     * <p>软删单条 term_ratio</p>
+     *
+     * @param rid term_ratio ID (必填)
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 notFound
+     */
     public R<Map<String, Object>> deleteTermRatio(Long rid) {
         if (rid == null) throw BizException.badRequest("rid 必填");
         int n = termRatioMapper.softDeleteById(rid, uid());

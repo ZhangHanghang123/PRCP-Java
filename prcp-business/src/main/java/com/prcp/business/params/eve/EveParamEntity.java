@@ -11,13 +11,26 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * EVE 参数补录
- * 对应表 prcp_eve_param
+ * <p>实体类: 映射数据库表 prcp_eve_param</p>
  *
- * 字段特点（与 CET1/LCR/NIM/NSFR/ROE 不同）：
- *   - asset_type / liability_type 为文本（贷款/债券/同业/...）
- *   - duration 为久期（年），decimal(8,4)
- *   - 主键由 scheme_code + node_code + YYYYMMDD 拼成，非自增
+ * <p>字段说明:
+ * <ul>
+ *   <li>id - 复合主键 {scheme_code}_{node_code}_{YYYYMMDD}</li>
+ *   <li>schemeId / schemeCode - 方案 ID 和编码</li>
+ *   <li>nodeId / nodeCode / nodeName - 科目节点三件套</li>
+ *   <li>dataDate - 数据日期</li>
+ *   <li>isAsset + assetType + assetCategory + assetOperator - 资产端 (利率敏感性资产)</li>
+ *   <li>isLiability + liabilityType + liabilityCategory + liabilityOperator - 负债端 (利率敏感性负债)</li>
+ *   <li>duration - 久期 (年, decimal(8,4))</li>
+ *   <li>currentBalance - 期末余额</li>
+ *   <li>isDeleted - 软删除标记</li>
+ * </ul>
+ * </p>
+ *
+ * <p>特点: asset_type / liability_type 为文本 (贷款/债券/同业/...); 与 CET1/LCR/NIM/NSFR/ROE 字段结构不同。</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Data
 @TableName("prcp_eve_param")

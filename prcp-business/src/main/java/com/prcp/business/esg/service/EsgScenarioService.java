@@ -13,8 +13,31 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 
 /**
- * ESG 情景集服务（4 端点：list / get / stats / download .npz blob）
- * 对齐 Python routers/esg.py scenarios 相关端点
+ * <p>ESG 情景集 Service (4 端点: list / get / stats / download .npz blob)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>情景集列表 (分页 + scheme 过滤)</li>
+ *   <li>情景集详情 (不含 pathsBlob, 改用 hasBlob 标记)</li>
+ *   <li>预计算统计 (HJM 包络 + 终期分布 + 波动率, 9 JSON 字段反序列化)</li>
+ *   <li>下载 .npz (读 paths_blob BLOB)</li>
+ *   <li>写情景集 (B+D 双写, ExecutionService 调用)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>9 JSON 字段: percentile10/50/90 + finalMean/Std/Min/Max + volPerMaturity</li>
+ *   <li>BLOB: paths_blob 存 .npz 字节流</li>
+ *   <li>maturitiesJson 反序列化为 maturitiesMonths (List&lt;Integer&gt;)</li>
+ *   <li>pageSize 上限: 100 (防止爆量)</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.esg.mapper.EsgScenarioMapper
+ * @see com.prcp.business.esg.entity.EsgScenario
  */
 @Slf4j
 @Service
@@ -24,7 +47,14 @@ public class EsgScenarioService {
     private final EsgScenarioMapper mapper;
     private final ObjectMapper om = new ObjectMapper();
 
-    /** 情景集列表（分页 + scheme 过滤） */
+    /**
+     * <p>情景集列表 (分页 + scheme 过滤)</p>
+     *
+     * @param schemeId 方案 ID (可选, null 表示所有方案)
+     * @param page     页码 (从 1 开始)
+     * @param pageSize 每页条数 (上限 100)
+     * @return R.ok(Map.of("items"/"total"/"page"/"pageSize", ...))
+     */
     public R<Map<String, Object>> listScenarios(Long schemeId, int page, int pageSize) {
         int offset = (page - 1) * pageSize;
         List<Map<String, Object>> items = mapper.listScenarios(schemeId, Math.min(pageSize, 100), offset);
@@ -37,7 +67,12 @@ public class EsgScenarioService {
         return R.ok(resp);
     }
 
-    /** 情景集详情 */
+    /**
+     * <p>情景集详情 (不含 pathsBlob 字节, 改用 hasBlob 标记)</p>
+     *
+     * @param scenarioCode 情景集编码 (必填)
+     * @return R.ok(Map); 不存在时抛 badRequest
+     */
     public R<Map<String, Object>> getScenario(String scenarioCode) {
         Map<String, Object> row = mapper.selectByCode(scenarioCode);
         if (row == null) throw BizException.badRequest("scenario " + scenarioCode + " 不存在");
@@ -52,7 +87,12 @@ public class EsgScenarioService {
         return R.ok(row);
     }
 
-    /** 预计算统计（HJM 包络 + 终期分布 + 波动率） */
+    /**
+     * <p>预计算统计 (HJM 包络 + 终期分布 + 波动率, 9 JSON 字段反序列化)</p>
+     *
+     * @param scenarioCode 情景集编码 (必填)
+     * @return R.ok(Map) 含 maturitiesMonths + p10/p50/p90 + finalMean/Std/Min/Max + volPerMaturity + nZeros + nNegatives
+     */
     public R<Map<String, Object>> getStats(String scenarioCode) {
         Map<String, Object> row = mapper.selectByCode(scenarioCode);
         if (row == null) throw BizException.badRequest("scenario " + scenarioCode + " 不存在");
@@ -91,7 +131,12 @@ public class EsgScenarioService {
         return R.ok(resp);
     }
 
-    /** 下载 .npz（读 paths_blob BLOB） */
+    /**
+     * <p>下载 .npz (读 paths_blob BLOB)</p>
+     *
+     * @param scenarioCode 情景集编码 (必填)
+     * @return .npz 字节流; 不存在时抛 badRequest
+     */
     public byte[] downloadNumpy(String scenarioCode) {
         Map<String, Object> row = mapper.selectByCode(scenarioCode);
         if (row == null) throw BizException.badRequest("scenario " + scenarioCode + " 不存在");
@@ -102,13 +147,24 @@ public class EsgScenarioService {
 
     // ===================== 写情景集（B+D 双写） =====================
 
-    /** ExecutionService 调用：保存情景集 + blob + 9 JSON */
+    /**
+     * <p>ExecutionService 调用: 保存情景集 + blob + 9 JSON</p>
+     *
+     * @param s 完整 EsgScenario 实体 (含 pathsBlob + 9 JSON + maturitiesJson)
+     * @return 写入的 scenario ID
+     */
     public Long insertScenario(EsgScenario s) {
         mapper.insertScenario(s);
         return s.getId();
     }
 
-    /** 更新 last_run_id */
+    /**
+     * <p>更新 last_run_id (关联最近一次 generate run)</p>
+     *
+     * @param scenarioId 情景集 ID
+     * @param runId      关联的 run ID
+     * @return 更新行数
+     */
     public int updateLastRunId(Long scenarioId, Long runId) {
         return mapper.updateLastRunId(scenarioId, runId);
     }

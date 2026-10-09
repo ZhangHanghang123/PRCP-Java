@@ -8,13 +8,33 @@ import org.apache.ibatis.annotations.Select;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * <p>Mapper: prcp_eve_param 表的 SQL 访问层</p>
+ *
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>query(...) - 列表查询 (带筛选), JOIN prcp_coa_scheme 取方案名</li>
+ *   <li>listSchemes/listNodes/listOperators/listDataDates - 下拉选项 (EVE_OPERATOR 字典)</li>
+ * </ul>
+ * </p>
+ *
+ * <p>特点: 字段含 isAsset/isLiability + assetType/liabilityType, 久期 duration (decimal(8,4))。</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ */
 @Mapper
 public interface EveParamMapper extends BaseMapper<EveParamEntity> {
 
     /**
-     * 列表查询：默认排除软删，支持 schemeId / nodeId / dataDate / keyword 过滤
-     * JOIN prcp_coa_scheme 取方案名
-     * ORDER BY data_date DESC, scheme_code, node_code
+     * <p>列表查询: 默认排除软删, 支持 schemeId / nodeId / dataDate / keyword 过滤</p>
+     * <p>JOIN prcp_coa_scheme 取方案名, ORDER BY data_date DESC, scheme_code, node_code</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param nodeId   节点 ID (可选)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @param keyword  模糊搜索关键字 (节点编码/名称/规则说明)
+     * @return 行 Map 列表, 已过滤 is_deleted=0, 最多 5000 条
      */
     @Select("""
         SELECT
@@ -59,7 +79,9 @@ public interface EveParamMapper extends BaseMapper<EveParamEntity> {
                                     @Param("keyword")  String keyword);
 
     /**
-     * 下拉选项：账户册方案 + 节点 + EVE_OPERATOR 字典 + 已用数据日期
+     * <p>下拉选项: 账户册方案 (ACTIVE)</p>
+     *
+     * @return 方案列表, 按 scheme_code 升序
      */
     @Select("""
         SELECT id, scheme_code AS schemeCode, scheme_name AS schemeName, status
@@ -69,6 +91,11 @@ public interface EveParamMapper extends BaseMapper<EveParamEntity> {
     """)
     List<Map<String, Object>> listSchemes();
 
+    /**
+     * <p>下拉选项: 账户册节点 (ACTIVE)</p>
+     *
+     * @return 节点列表, 按 scheme_id, path, sort_order 排序
+     */
     @Select("""
         SELECT id, scheme_id AS schemeId, node_code AS nodeCode, node_name AS nodeName,
                node_level AS nodeLevel, status
@@ -78,6 +105,11 @@ public interface EveParamMapper extends BaseMapper<EveParamEntity> {
     """)
     List<Map<String, Object>> listNodes();
 
+    /**
+     * <p>下拉选项: EVE_OPERATOR 字典</p>
+     *
+     * @return 字典项, 含 dictKey/dictLabel/sortOrder
+     */
     @Select("""
         SELECT dict_key AS dictKey, dict_label AS dictLabel, sort_order AS sortOrder
         FROM sys_dict
@@ -86,6 +118,11 @@ public interface EveParamMapper extends BaseMapper<EveParamEntity> {
     """)
     List<Map<String, Object>> listOperators();
 
+    /**
+     * <p>下拉选项: 已存在的补录数据日期 (近 60 条)</p>
+     *
+     * @return data_date 列表, 按日期 DESC
+     */
     @Select("""
         SELECT DISTINCT data_date AS dataDate
         FROM prcp_eve_param

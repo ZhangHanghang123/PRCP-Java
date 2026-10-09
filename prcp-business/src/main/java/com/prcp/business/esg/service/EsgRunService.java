@@ -13,8 +13,30 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 
 /**
- * ESG 运行历史服务（3 端点：scheme 级 run / 全局 run / 单 run 详情）
- * 对齐 Python routers/esg.py: list_scheme_runs / list_all_runs / get_run
+ * <p>ESG 运行历史 Service (3 端点: scheme 级 run / 全局 run / 单 run 详情)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>方案级 run 历史 (按 schemeId + runType/status 过滤)</li>
+ *   <li>全局 run 历史 (分页 + 多条件)</li>
+ *   <li>单 run 详情 (含 JSON 反序列化)</li>
+ *   <li>写 run (ExecutionService 调用, 含 params/output JSON 字段)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>JSON 字段: params_json / output_json 读写时自动序列化/反序列化</li>
+ *   <li>run 类型: PCA_FIT / HJM_GENERATE / SCENARIO_GENERATE</li>
+ *   <li>limit 上限: 200 (防止爆量)</li>
+ *   <li>默认 status: SUCCESS</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.esg.mapper.EsgRunMapper
+ * @see com.prcp.business.esg.entity.EsgRun
  */
 @Slf4j
 @Service
@@ -24,7 +46,15 @@ public class EsgRunService {
     private final EsgRunMapper mapper;
     private final ObjectMapper om = new ObjectMapper();
 
-    /** 方案级 run 历史 */
+    /**
+     * <p>方案级 run 历史</p>
+     *
+     * @param schemeId 方案 ID (必填)
+     * @param runType  run 类型 (PCA_FIT/HJM_GENERATE/SCENARIO_GENERATE, 可选)
+     * @param status   run 状态 (SUCCESS/FAILED, 可选)
+     * @param limit    返回条数 (上限 200)
+     * @return R.ok(Map.of("items", list)); JSON 字段已反序列化
+     */
     public R<Map<String, Object>> listByScheme(Long schemeId, String runType, String status, int limit) {
         List<Map<String, Object>> items = mapper.listByScheme(schemeId, emptyToNull(runType), emptyToNull(status), Math.min(limit, 200));
         decodeJsonFields(items);
@@ -33,7 +63,16 @@ public class EsgRunService {
         return R.ok(resp);
     }
 
-    /** 全局 run 历史（含分页） */
+    /**
+     * <p>全局 run 历史 (分页)</p>
+     *
+     * @param schemeId 方案 ID (可选, null 表示所有方案)
+     * @param runType  run 类型 (可选)
+     * @param status   run 状态 (可选)
+     * @param page     页码 (从 1 开始)
+     * @param pageSize 每页条数
+     * @return R.ok(Map.of("items"/"total"/"page"/"pageSize", ...)); JSON 字段已反序列化
+     */
     public R<Map<String, Object>> listAll(Long schemeId, String runType, String status, int page, int pageSize) {
         int offset = (page - 1) * pageSize;
         List<Map<String, Object>> items = mapper.listAll(schemeId, emptyToNull(runType), emptyToNull(status), pageSize, offset);
@@ -47,7 +86,12 @@ public class EsgRunService {
         return R.ok(resp);
     }
 
-    /** 单 run 详情 */
+    /**
+     * <p>单 run 详情</p>
+     *
+     * @param id run 主键 ID (必填)
+     * @return R.ok(Map) 含 schemeId/schemeCode/runType/status/params/output/filePath/durationMs/errorMessage/createdAt
+     */
     public R<Map<String, Object>> getRun(Long id) {
         EsgRun r = mapper.selectById(id);
         if (r == null) throw BizException.badRequest("run " + id + " 不存在");
@@ -66,7 +110,20 @@ public class EsgRunService {
         return R.ok(map);
     }
 
-    /** 写 run（ExecutionService 调用） */
+    /**
+     * <p>写 run (ExecutionService 调用)</p>
+     *
+     * @param schemeId     方案 ID
+     * @param schemeCode   方案编码
+     * @param runType      run 类型 (PCA_FIT/HJM_GENERATE/SCENARIO_GENERATE)
+     * @param status       run 状态 (默认 SUCCESS)
+     * @param params       参数 Map (序列化为 params_json)
+     * @param output       输出 Map (序列化为 output_json)
+     * @param filePath     关联文件路径 (.npz, 可选)
+     * @param durationMs   耗时毫秒
+     * @param errorMessage 错误信息 (失败时填)
+     * @return 写入的 run ID
+     */
     public Long writeRun(Long schemeId, String schemeCode, String runType, String status,
                           Map<String, Object> params, Map<String, Object> output,
                           String filePath, Integer durationMs, String errorMessage) {

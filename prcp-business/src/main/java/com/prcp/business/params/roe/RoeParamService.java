@@ -14,16 +14,31 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * ROE 参数补录 Service（4 端点）
- * <p>对齐 Python routers/roe_param.py: list_roe_params / list_options / create / update / delete</p>
+ * <p>ROE (净资产收益率) 参数补录 Service (5 端点: query/listOptions/create/update/delete)</p>
  *
- * ID 生成：{scheme_code}_{node_code}_{YYYYMMDD}
- * 默认值：is_net_profit = 0, net_profit_symbol = '+', net_profit_factor = 0
- *         is_net_asset   = 0, net_asset_symbol   = '+', net_asset_factor   = 0
- *         status = 'ACTIVE', is_deleted = 0
+ * <p>核心职责:
+ * <ol>
+ *   <li>列表查询 (4 个过滤条件 + data_date 格式校验)</li>
+ *   <li>下拉选项 (4 类)</li>
+ *   <li>新增 (自动生成主键 + 0/1 归一化 + 默认值)</li>
+ *   <li>部分更新 (camelCase/snake_case 双兼容)</li>
+ *   <li>软删除</li>
+ * </ol>
+ * </p>
  *
- * @author PRCP WorkBuddy Agent
- * @date 2026-10-08
+ * <p>关键约定:
+ * <ul>
+ *   <li>复合主键: {scheme_code}_{node_code}_{YYYYMMDD}</li>
+ *   <li>软删除: is_deleted=1, 不物理删除</li>
+ *   <li>默认值: is_net_profit=0, net_profit_symbol='+', is_net_asset=0, net_asset_symbol='+', status='ACTIVE'</li>
+ *   <li>0/1 归一化: 支持 Boolean/Number/"是/yes/true/1" 多种输入</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.params.roe.RoeParamMapper
+ * @see com.prcp.business.params.roe.RoeParamEntity
  */
 @Slf4j
 @Service
@@ -32,7 +47,15 @@ public class RoeParamService {
 
     private final RoeParamMapper mapper;
 
-    // ============== 1. 列表查询 ==============
+    /**
+     * <p>列表查询 (4 个过滤条件 + data_date 格式校验)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param nodeId   节点 ID (可选)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选, 自动校验格式)
+     * @param keyword  关键字 (可选)
+     * @return R.ok(Map.of("items", list, "total", list.size())); data_date 格式错时抛 badRequest
+     */
     public R<Map<String, Object>> query(Long schemeId, Long nodeId, String dataDate, String keyword) {
         if (dataDate != null && !dataDate.isEmpty()) {
             // 简单格式校验
@@ -49,7 +72,11 @@ public class RoeParamService {
         return R.ok(resp);
     }
 
-    // ============== 2. 下拉选项 ==============
+    /**
+     * <p>下拉选项 (4 类: schemes/nodes/operators/data_dates)</p>
+     *
+     * @return R.ok(Map 含 schemes/nodes/operators/data_dates 四个列表)
+     */
     public R<Map<String, Object>> listOptions() {
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("schemes", mapper.listSchemes());
@@ -59,7 +86,12 @@ public class RoeParamService {
         return R.ok(resp);
     }
 
-    // ============== 3. 新增 ==============
+    /**
+     * <p>新增 (camelCase/snake_case 双兼容, 0/1 归一化, 自动生成主键)</p>
+     *
+     * @param body 含 schemeId/schemeCode/nodeId/nodeCode/dataDate + 净利润/净资产因子
+     * @return R.ok(Map.of("ok"/"id")); 字段缺失或格式错时抛 badRequest
+     */
     public R<Map<String, Object>> create(Map<String, Object> body) {
         Long schemeId = toLong(body.get("schemeId"), body.get("scheme_id"));
         if (schemeId == null) throw BizException.badRequest("schemeId 必填");
@@ -124,7 +156,13 @@ public class RoeParamService {
         return R.ok(resp);
     }
 
-    // ============== 4. 更新（部分更新，跳过 null） ==============
+    /**
+     * <p>更新 (部分更新, 跳过 null, camelCase/snake_case 双兼容)</p>
+     *
+     * @param id   主键 ID (必填)
+     * @param body 待更新字段
+     * @return R.ok(Map.of("ok"/"id"/"updated", N)); 记录不存在或未变更时抛 badRequest
+     */
     public R<Map<String, Object>> update(String id, Map<String, Object> body) {
         if (id == null || id.isEmpty()) throw BizException.badRequest("id 必填");
 
@@ -160,7 +198,12 @@ public class RoeParamService {
         return R.ok(resp);
     }
 
-    // ============== 5. 软删 ==============
+    /**
+     * <p>软删除 (is_deleted=1)</p>
+     *
+     * @param id 主键 ID (必填)
+     * @return R.ok(Map.of("ok"/"id")); 不存在或已删除时抛 badRequest
+     */
     public R<Map<String, Object>> delete(String id) {
         int n = mapper.softDeleteById(id, 1L);
         if (n == 0) throw BizException.badRequest("记录不存在或已删除");

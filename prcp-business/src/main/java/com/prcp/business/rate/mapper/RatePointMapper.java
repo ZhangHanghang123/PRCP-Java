@@ -11,12 +11,34 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * <p>Mapper: prcp_rate_point 表的 SQL 访问层 (利率曲线点)</p>
+ *
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>listPoints - 利率点列表 (JOIN prcp_rate_scheme 取 curve_name)</li>
+ *   <li>selectPrevY10 - 上一个数据日期的 rate_y10 (计算 curve_shift_bps)</li>
+ *   <li>listForCompare - 历史曲线对比 (按日期升序 + 期限点)</li>
+ *   <li>lookupRate - 按 (curve_code, data_date, term) 查单一利率 (动态列)</li>
+ *   <li>softDeleteById / softDeleteByCurveId - 软删</li>
+ *   <li>upsertPoint - UPSERT 单条 (INSERT ON DUPLICATE KEY UPDATE)</li>
+ * </ul>
+ * </p>
+ *
+ * <p>期限字段: rate_d1/d7/m1/m3/m6/y1/y2/y3/y5/y10/y15/y20/y30 (13 个期限)。</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ */
 @Mapper
 public interface RatePointMapper extends BaseMapper<RatePoint> {
 
     /**
-     * 列出利率点（JOIN prcp_rate_scheme 取 curve_name）
-     * 对齐 Python routers/rate.py list_points
+     * <p>列出利率点 (JOIN prcp_rate_scheme 取 curve_name, 按 curve_code + data_date DESC)</p>
+     *
+     * @param curveCode 曲线编码 (可选)
+     * @param dataDate  数据日期 (可选)
+     * @return 利率点 Map 列表
      */
     @Select({
         "<script>",
@@ -39,7 +61,13 @@ public interface RatePointMapper extends BaseMapper<RatePoint> {
     List<Map<String, Object>> listPoints(@Param("curveCode") String curveCode,
                                          @Param("dataDate") String dataDate);
 
-    /** 查上一个数据日期的 rate_y10（计算 curve_shift_bps 用） */
+    /**
+     * <p>查上一个数据日期的 rate_y10 (计算 curve_shift_bps 用)</p>
+     *
+     * @param curveCode 曲线编码
+     * @param dataDate  当前数据日期 (严格小于)
+     * @return rate_y10, 不存在返回 null
+     */
     @Select({
         "SELECT rate_y10 FROM prcp_rate_point",
         " WHERE curve_code = #{curveCode} AND data_date < #{dataDate} AND is_deleted = 0",
@@ -48,7 +76,14 @@ public interface RatePointMapper extends BaseMapper<RatePoint> {
     java.math.BigDecimal selectPrevY10(@Param("curveCode") String curveCode,
                                        @Param("dataDate") String dataDate);
 
-    /** 历史曲线对比（按日期升序 + 期限点） */
+    /**
+     * <p>历史曲线对比 (按日期升序 + 期限点)</p>
+     *
+     * @param curveCode 曲线编码
+     * @param startDate 起始日期 (可选)
+     * @param endDate   结束日期 (可选)
+     * @return 历史利率点列表, 按 data_date ASC
+     */
     @Select({
         "<script>",
         "SELECT data_date,",
@@ -66,7 +101,14 @@ public interface RatePointMapper extends BaseMapper<RatePoint> {
                                               @Param("startDate") String startDate,
                                               @Param("endDate") String endDate);
 
-    /** 按 (curve_code + data_date + term) 查单一利率 */
+    /**
+     * <p>按 (curve_code + data_date + term) 查单一利率 (动态列)</p>
+     *
+     * @param curveCode 曲线编码
+     * @param dataDate  数据日期
+     * @param col       期限列名 (例 rate_y10, 白名单校验由调用方负责)
+     * @return 利率值, 不存在返回 null
+     */
     @Select({
         "SELECT ${col} FROM prcp_rate_point",
         " WHERE curve_code = #{curveCode} AND data_date = #{dataDate} AND is_deleted = 0",
@@ -76,15 +118,31 @@ public interface RatePointMapper extends BaseMapper<RatePoint> {
                                     @Param("dataDate") LocalDate dataDate,
                                     @Param("col") String col);
 
-    /** 软删利率点 */
+    /**
+     * <p>软删利率点</p>
+     *
+     * @param id 利率点 ID
+     * @return 受影响行数
+     */
     @Update("UPDATE prcp_rate_point SET is_deleted = 1 WHERE id = #{id} AND is_deleted = 0")
     int softDeleteById(@Param("id") Long id);
 
-    /** 软删某曲线方案下的所有利率点（删除方案时级联） */
+    /**
+     * <p>软删某曲线方案下的所有利率点 (删除方案时级联)</p>
+     *
+     * @param curveId 曲线方案 ID
+     * @return 受影响行数
+     */
     @Update("UPDATE prcp_rate_point SET is_deleted = 1 WHERE curve_id = #{curveId} AND is_deleted = 0")
     int softDeleteByCurveId(@Param("curveId") Long curveId);
 
-    /** UPSERT 单条利率点（INSERT ON DUPLICATE KEY UPDATE） */
+    /**
+     * <p>UPSERT 单条利率点 (INSERT ON DUPLICATE KEY UPDATE)</p>
+     *
+     * @param p   利率点实体 (含 13 个期限字段 + curveShiftBps/curveSlope)
+     * @param uid 操作人 ID (同时作为 created_by / updated_by)
+     * @return 受影响行数 (1 新增 / 2 更新)
+     */
     @Update({
         "INSERT INTO prcp_rate_point",
         "  (curve_id, curve_code, data_date, ccy,",

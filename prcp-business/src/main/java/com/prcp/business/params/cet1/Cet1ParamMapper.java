@@ -9,17 +9,33 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * CET1 参数补录 Mapper
+ * <p>Mapper: prcp_cet1_param 表的 SQL 访问层</p>
  *
- * - query(...)          ：列表查询（带筛选），JOIN 账户册方案补 schemeName
- * - listSchemes/listNodes/listOperators/listDataDates  ：下拉选项
- * - getNodeNameById     ：新增时按 node_id 自动补 node_name
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>query(...) - 列表查询 (带筛选), JOIN 账户册方案补 schemeName</li>
+ *   <li>listSchemes/listNodes/listOperators/listDataDates - 下拉选项</li>
+ *   <li>getNodeNameById - 新增时按 node_id 自动补 node_name</li>
+ * </ul>
+ * </p>
  *
- * 命名遵循驼峰别名，前端可直接用 schemeId / nodeCode 等字段名取值。
+ * <p>命名遵循驼峰别名, 前端可直接用 schemeId / nodeCode 等字段名取值。</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Mapper
 public interface Cet1ParamMapper extends BaseMapper<Cet1ParamEntity> {
 
+    /**
+     * <p>列表查询 (JOIN prcp_coa_scheme 取 scheme_name)</p>
+     *
+     * @param schemeId 方案 ID (可选, null 不过滤)
+     * @param nodeId   节点 ID (可选)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @param keyword  模糊搜索关键字 (节点编码/名称/规则说明)
+     * @return 行 Map 列表 (key 为 camelCase), 已过滤 is_deleted=0, 按 data_date DESC 排序
+     */
     @Select("""
         SELECT
           p.id,
@@ -57,6 +73,11 @@ public interface Cet1ParamMapper extends BaseMapper<Cet1ParamEntity> {
                                     @Param("dataDate") String dataDate,
                                     @Param("keyword")  String keyword);
 
+    /**
+     * <p>下拉选项: 账户册方案 (ACTIVE)</p>
+     *
+     * @return 方案列表, 按 scheme_code 升序
+     */
     @Select("""
         SELECT id, scheme_code AS schemeCode, scheme_name AS schemeName, status
         FROM prcp_coa_scheme
@@ -65,6 +86,11 @@ public interface Cet1ParamMapper extends BaseMapper<Cet1ParamEntity> {
     """)
     List<Map<String, Object>> listSchemes();
 
+    /**
+     * <p>下拉选项: 账户册节点 (ACTIVE)</p>
+     *
+     * @return 节点列表, 按 scheme_id, path, sort_order 排序
+     */
     @Select("""
         SELECT id,
                scheme_id  AS schemeId,
@@ -78,6 +104,11 @@ public interface Cet1ParamMapper extends BaseMapper<Cet1ParamEntity> {
     """)
     List<Map<String, Object>> listNodes();
 
+    /**
+     * <p>下拉选项: CET1_OPERATOR 字典 (分子运算符)</p>
+     *
+     * @return 字典项, 含 dictKey/dictLabel/sortOrder
+     */
     @Select("""
         SELECT dict_key   AS dictKey,
                dict_label AS dictLabel,
@@ -88,6 +119,11 @@ public interface Cet1ParamMapper extends BaseMapper<Cet1ParamEntity> {
     """)
     List<Map<String, Object>> listOperators();
 
+    /**
+     * <p>下拉选项: 已存在的补录数据日期 (近 60 条)</p>
+     *
+     * @return data_date 列表, 按日期 DESC
+     */
     @Select("""
         SELECT DISTINCT data_date AS dataDate
         FROM prcp_cet1_param
@@ -97,7 +133,12 @@ public interface Cet1ParamMapper extends BaseMapper<Cet1ParamEntity> {
     """)
     List<Map<String, Object>> listDataDates();
 
-    /** 新增时按 node_id 自动补 node_name（前端未传时使用） */
+    /**
+     * <p>按 node_id 自动补 node_name (前端新增时未传时使用)</p>
+     *
+     * @param nodeId 节点 ID
+     * @return node_name 字符串, 不存在返回 null
+     */
     @Select("""
         SELECT node_name FROM prcp_coa_node
         WHERE id = #{nodeId} AND is_deleted = 0 LIMIT 1

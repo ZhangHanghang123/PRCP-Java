@@ -25,6 +25,34 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * <p>KPI Service (定义/值/评分规则/区间段/试算评分)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>KPI 定义 CRUD (含指标方案管理)</li>
+ *   <li>KPI 值 CRUD</li>
+ *   <li>评分规则 CRUD (含 segments 整段替换)</li>
+ *   <li>试算评分 (按指标+日期) + 区间段匹配</li>
+ *   <li>报表表项列表</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>软删除: is_deleted=1, 不物理删除</li>
+ *   <li>评分规则: status='ACTIVE'/'INACTIVE'</li>
+ *   <li>评分算法: 高优型 (higher_is_better=1) 按 [min, max] 线性; 低优型反向</li>
+ *   <li>区间段: null = 负无穷/正无穷, 按 seg_order 遍历</li>
+ *   <li>字段命名: snake_case 主 + camelCase 别名 (前端两种都用)</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.kpi.mapper.KpiMapper
+ * @see com.prcp.business.kpi.entity.KpiDefinition
+ */
 @Service
 @RequiredArgsConstructor
 public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
@@ -34,11 +62,24 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
     private final KpiScoreRuleMapper kpiScoreRuleMapper;
     private final KpiScoreSegmentMapper kpiScoreSegmentMapper;
 
-    // ============ KPI 定义 ============
+    /**
+     * <p>查询 KPI 定义列表</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param kpiCode  KPI 编码 (可选)
+     * @param keyword  关键字 (可选)
+     * @return 行 Map 列表
+     */
     public R<List<Map<String, Object>>> listDefs(Long schemeId, String kpiCode, String keyword) {
         return R.ok(kpiMapper.listDefs(schemeId, kpiCode, keyword));
     }
 
+    /**
+     * <p>创建 KPI 定义 (校验 kpi_code/name 必填, 默认 status='ACTIVE', indicator_type=1)</p>
+     *
+     * @param d KPI 定义实体
+     * @return R.ok(d) 或 R.fail
+     */
     public R<?> createDef(KpiDefinition d) {
         if (d.getKpiCode() == null || d.getKpiCode().isEmpty())
             throw BizException.badRequest("kpi_code 不能为空");
@@ -51,6 +92,13 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return ok ? R.ok(d) : R.fail("创建失败");
     }
 
+    /**
+     * <p>更新 KPI 定义</p>
+     *
+     * @param id 指标 ID (必填)
+     * @param d  待更新的字段
+     * @return R.ok() 或 R.fail; 不存在时抛 notFound
+     */
     public R<?> updateDef(Long id, KpiDefinition d) {
         if (kpiMapper.selectById(id) == null) throw BizException.notFound("指标不存在");
         d.setId(id);
@@ -58,6 +106,12 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return ok ? R.ok() : R.fail("更新失败");
     }
 
+    /**
+     * <p>软删除 KPI 定义 (is_deleted=1)</p>
+     *
+     * @param id 指标 ID (必填)
+     * @return R.ok() 或 R.fail; 不存在时抛 notFound
+     */
     public R<?> deleteDef(Long id) {
         if (kpiMapper.selectById(id) == null) throw BizException.notFound("指标不存在");
         KpiDefinition upd = new KpiDefinition();
@@ -68,11 +122,24 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return ok ? R.ok() : R.fail("删除失败");
     }
 
-    // ============ KPI 值 ============
+    /**
+     * <p>查询 KPI 值列表</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param kpiId    指标 ID (可选)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @return 行 Map 列表
+     */
     public R<List<Map<String, Object>>> listValues(Long schemeId, Long kpiId, String dataDate) {
         return R.ok(kpiMapper.listValues(schemeId, kpiId, dataDate));
     }
 
+    /**
+     * <p>创建 KPI 值 (默认 data_date=今天, version='V1.0', calc_source='MANUAL')</p>
+     *
+     * @param v KPI 值实体
+     * @return R.ok(v) 或 R.fail
+     */
     public R<?> createValue(KpiValue v) {
         if (v.getKpiId() == null) throw BizException.badRequest("kpi_id 不能为空");
         if (v.getDataDate() == null) v.setDataDate(LocalDate.now());
@@ -83,6 +150,12 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return ok ? R.ok(v) : R.fail("创建失败");
     }
 
+    /**
+     * <p>软删除 KPI 值 (is_deleted=1)</p>
+     *
+     * @param id KPI 值主键 ID
+     * @return R.ok() 或 R.fail
+     */
     public R<?> deleteValue(Long id) {
         KpiValue upd = new KpiValue();
         upd.setId(id);
@@ -92,7 +165,16 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return ok ? R.ok() : R.fail("删除失败");
     }
 
-    // ============ 试算评分（简易：与 last_value 比较） ============
+    /**
+     * <p>试算评分 (按指标+日期 取最新 value + 最高优先级 ACTIVE 规则 + [min, max] 线性评分)</p>
+     *
+     * <p>高优型 (higher_is_better=1): cur ≥ max → total; cur ≤ min → 0; 中间按比例</p>
+     * <p>低优型: cur ≤ min → total; cur ≥ max → 0; 中间按比例</p>
+     *
+     * @param kpiId    指标 ID (必填)
+     * @param dataDate 数据日期 yyyy-MM-dd (必填)
+     * @return R.ok(Map.of("score"/"rule", ruleName)); 缺值或缺规则时抛 badRequest
+     */
     public R<?> recalcScore(Long kpiId, String dataDate) {
         // 取最近一条 value
         KpiValue v = kpiValueMapper.selectOne(
@@ -145,11 +227,23 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return R.ok(java.util.Map.of("score", score, "rule", rule.getRuleName()));
     }
 
-    // ============ 评分规则 ============
+    /**
+     * <p>查询评分规则列表</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param kpiId    指标 ID (可选)
+     * @return 行 Map 列表
+     */
     public R<List<Map<String, Object>>> listScoreRules(Long schemeId, Long kpiId) {
         return R.ok(kpiMapper.listScoreRules(schemeId, kpiId));
     }
 
+    /**
+     * <p>创建评分规则 (默认 status='ACTIVE')</p>
+     *
+     * @param r 评分规则实体 (kpiId/ruleName 必填)
+     * @return R.ok(Map.of("id"/"message", "ok")) 或 R.fail
+     */
     public R<?> createScoreRule(KpiScoreRule r) {
         if (r.getKpiId() == null) throw BizException.badRequest("kpi_id 不能为空");
         if (r.getRuleName() == null || r.getRuleName().isEmpty())
@@ -166,6 +260,12 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return R.ok(resp);
     }
 
+    /**
+     * <p>软删除评分规则 (is_deleted=1)</p>
+     *
+     * @param id 规则 ID (必填)
+     * @return R.ok() 或 R.fail
+     */
     public R<?> deleteScoreRule(Long id) {
         KpiScoreRule upd = new KpiScoreRule();
         upd.setId(id);
@@ -176,9 +276,14 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
     }
 
     /**
-     * 更新评分规则（含 segments 整段替换）
-     * 对齐 Python routers/kpi.py update_score_rule：UPDATE 规则 → 软删旧 segments → 插入新 segments
-     * body 含 segments 数组时一并替换；不含时只更新主表
+     * <p>更新评分规则 (含 segments 整段替换)</p>
+     *
+     * <p>对齐 Python routers/kpi.py update_score_rule: UPDATE 规则 → 软删旧 segments → 插入新 segments</p>
+     *
+     * @param id   规则 ID (必填)
+     * @param r    待更新的规则字段
+     * @param body body 含 segments 数组时一并替换; 不含时只更新主表
+     * @return R.ok(Map.of("id"/"message"/"segment_count")); 不存在时抛 badRequest
      */
     @Transactional
     public R<?> updateScoreRule(Long id, KpiScoreRule r, Map<String, Object> body) {
@@ -220,10 +325,13 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
     }
 
     /**
-     * 按规则 + 指标值算分（区间段匹配）
-     * 对齐 Python routers/kpi.py score_calc：按 seg_order 遍历 segments，落入 [min, max] 第一个段
-     *   - min_value / max_value 为 null 表示负无穷 / 正无穷
-     *   - 返回 {matched, value, score, matched_range, higher_is_better}
+     * <p>按规则 + 指标值算分 (区间段匹配)</p>
+     *
+     * <p>对齐 Python routers/kpi.py score_calc: 按 seg_order 遍历 segments, 落入 [min, max] 第一个段</p>
+     *
+     * @param ruleId 规则 ID (必填)
+     * @param value  指标值 (必填)
+     * @return R.ok(Map) 含 matched/value/score/matched_range/higher_is_better; min/max_value 为 null 表示负无穷/正无穷
      */
     public R<Map<String, Object>> scoreCalc(Long ruleId, BigDecimal value) {
         if (ruleId == null) throw BizException.badRequest("rule_id 不能为空");
@@ -260,7 +368,13 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
     }
 
     /**
-     * 列表（含 segments 子表数据，对齐 Python list_score_rules 行为 + 字段 snake_case）
+     * <p>列表 (含 segments 子表数据, 对齐 Python list_score_rules 行为 + 字段 snake_case)</p>
+     *
+     * <p>字段命名同时输出 snake_case 和 camelCase 别名 (前端两种命名都能用)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param kpiId    指标 ID (可选)
+     * @return R.ok(List) 每条规则 + 嵌套 segments 数组
      */
     public R<List<Map<String, Object>>> listScoreRulesWithSegments(Long schemeId, Long kpiId) {
         List<Map<String, Object>> rules = kpiMapper.listScoreRules(schemeId, kpiId);
@@ -327,9 +441,18 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return R.ok(renamed);
     }
 
-    // ============ 辅助接口 ============
+    /**
+     * <p>查询 ACTIVE 的 KPI 方案列表 (供下拉选项)</p>
+     *
+     * @return R.ok(List)
+     */
     public R<List<Map<String, Object>>> listKpiSchemes() { return R.ok(kpiMapper.listKpiSchemes()); }
 
+    /**
+     * <p>查询所有未删除的 KPI 方案 (含 INACTIVE, 方案维护 Modal 用)</p>
+     *
+     * @return R.ok(List) 字段为 camelCase
+     */
     public R<List<Map<String, Object>>> listAllKpiSchemes() {
         QueryWrapper<KpiScheme> qw = new QueryWrapper<>();
         qw.eq("is_deleted", 0).orderByDesc("id");
@@ -337,6 +460,12 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return R.ok(list.stream().map(this::schemeToMap).collect(java.util.stream.Collectors.toList()));
     }
 
+    /**
+     * <p>创建 KPI 方案 (默认 status='ACTIVE', kpi_count=0)</p>
+     *
+     * @param s KPI 方案实体 (schemeCode/schemeName 必填)
+     * @return R.ok(Map) 字段为 camelCase 或 R.fail
+     */
     public R<?> createScheme(KpiScheme s) {
         if (s.getSchemeCode() == null || s.getSchemeCode().isEmpty())
             throw BizException.badRequest("scheme_code 不能为空");
@@ -349,6 +478,13 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return ok ? R.ok(schemeToMap(s)) : R.fail("创建失败");
     }
 
+    /**
+     * <p>更新 KPI 方案</p>
+     *
+     * @param id 方案 ID (必填)
+     * @param s  待更新的字段
+     * @return R.ok() 或 R.fail; 不存在时抛 notFound
+     */
     public R<?> updateScheme(Long id, KpiScheme s) {
         if (kpiMapper.selectKpiSchemeById(id) == null) throw BizException.notFound("方案不存在");
         s.setId(id);
@@ -356,6 +492,12 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return ok ? R.ok() : R.fail("更新失败");
     }
 
+    /**
+     * <p>软删除 KPI 方案 (is_deleted=1)</p>
+     *
+     * @param id 方案 ID (必填)
+     * @return R.ok() 或 R.fail
+     */
     public R<?> deleteScheme(Long id) {
         KpiScheme upd = new KpiScheme();
         upd.setId(id);
@@ -378,6 +520,12 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
         return m;
     }
 
+    /**
+     * <p>查询报表表项列表</p>
+     *
+     * @param rptId 报表 ID (必填)
+     * @return R.ok(List)
+     */
     public R<List<Map<String, Object>>> listRptItems(Long rptId) {
         if (rptId == null) throw BizException.badRequest("rpt_id 不能为空");
         return R.ok(kpiMapper.listRptItems(rptId));

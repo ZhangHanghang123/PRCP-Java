@@ -14,13 +14,43 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * <p>首页驾驶舱 + 反算驾驶舱 (PRD 风格) Service</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>总览 KPI 卡片 (8 项: 方案/节点/报表/指标/评分)</li>
+ *   <li>KPI 趋势 (近 N 天)</li>
+ *   <li>方案分布 + Top KPIs</li>
+ *   <li>反算驾驶舱 (9 KPI 卡片 + 24 月趋势 + 大类分布 + 节点矩阵 + Top 节点 + 风险预警)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>5 监管指标: ROE / CET1 / LCR / NSFR / △EVE (代码 KPI_PNN_*)</li>
+ *   <li>5 大类: 资产/负债/权益/表外/其他</li>
+ *   <li>△EVE 显示单位"亿" (= /10000), 其他 4 个指标单位 "%"</li>
+ *   <li>色彩规范: 主蓝 #5B8FF9, DEVE 用橙色 #F6903D (预警色)</li>
+ *   <li>数据日期: 缺省用 balance 表最新日期</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.dashboard.mapper.DashboardMapper
+ */
 @Service
 @RequiredArgsConstructor
 public class DashboardService {
 
     private final DashboardMapper dashboardMapper;
 
-    /** 总览 KPI 卡片 */
+    /**
+     * <p>总览 KPI 卡片 (8 项统计 + 最新数据日期)</p>
+     *
+     * @return R.ok(Map.of("kpi", list, "latest_data_date", "yyyy-MM-dd"))
+     */
     public R<Map<String, Object>> overview() {
         Map<String, Object> raw = dashboardMapper.overview();
         List<Map<String, Object>> kpi = new ArrayList<>();
@@ -53,18 +83,34 @@ public class DashboardService {
         return m;
     }
 
+    /**
+     * <p>KPI 趋势 (近 N 天)</p>
+     *
+     * @param days 趋势天数 (必填)
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> kpiTrend(int days) {
         Map<String, Object> out = new HashMap<>();
         out.put("items", dashboardMapper.kpiTrend(days));
         return R.ok(out);
     }
 
+    /**
+     * <p>方案分布 (按方案汇总节点数/记录数)</p>
+     *
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> schemeDistribution() {
         Map<String, Object> out = new HashMap<>();
         out.put("items", dashboardMapper.schemeDistribution());
         return R.ok(out);
     }
 
+    /**
+     * <p>Top KPIs (按重要性排序的指标列表)</p>
+     *
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> topKpis() {
         Map<String, Object> out = new HashMap<>();
         out.put("items", dashboardMapper.topKpis());
@@ -73,6 +119,14 @@ public class DashboardService {
 
     // ============ 反算驾驶舱（PRD 风格 9 KPI + 24 月趋势 + 大类分布） ============
 
+    /**
+     * <p>反算驾驶舱 (PRD 风格: 9 KPI + 24 月趋势 + 大类分布 + 节点矩阵 + Top 节点 + 风险预警)</p>
+     *
+     * <p>9 KPI 卡片: 账户册节点 / 已结指标 / 资产负债 / 负债余额 + 5 个监管指标 (ROE/CET1/LCR/NSFR/△EVE)</p>
+     *
+     * @param dataDate 数据日期 yyyy-MM-dd (可选, 空时用 balance 最新日期)
+     * @return 复合 Map: kpis, trend (24 月), distribution (环形+柱状), filterOptions, nodeMatrix, topNodes, riskAlerts
+     */
     public R<Map<String, Object>> reverseOverview(String dataDate) {
         Map<String, Object> raw = dashboardMapper.reverseKpiSummary();
         Map<String, Map<String, Object>> indi = new LinkedHashMap<>();

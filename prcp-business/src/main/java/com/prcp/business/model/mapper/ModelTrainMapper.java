@@ -9,9 +9,26 @@ import org.apache.ibatis.annotations.Select;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * <p>Mapper: prcp_model_train 表的 SQL 访问层 (模型训练记录)</p>
+ *
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>listTrains - 训练记录列表 (JOIN model + version 取名称)</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ */
 @Mapper
 public interface ModelTrainMapper extends BaseMapper<ModelTrain> {
 
+    /**
+     * <p>训练记录列表 (JOIN prcp_model 取 modelCode/modelName, JOIN prcp_model_version 取 versionCode/versionName)</p>
+     *
+     * @return 训练记录 Map 列表, 含 progress/status/durationSec/metrics, 按 ID DESC
+     */
     @Select({
         "SELECT t.id, t.train_code AS trainCode, t.model_id AS modelId, t.version_id AS versionId,",
         "       t.coa_scheme_id AS coaSchemeId,",

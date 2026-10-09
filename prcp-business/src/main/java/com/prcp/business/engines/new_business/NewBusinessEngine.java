@@ -18,29 +18,34 @@ import java.time.LocalDate;
 import java.util.*;
 
 /**
- * 新业务模拟引擎 — 5 步按月滚动算法（对位 Python app.services.calculate_engine.new_business.engine）
+ * <p>新业务模拟引擎 — 5 步按月滚动算法 (对位 Python app/services/calculate_engine/new_business/engine.py)</p>
  *
- * <p>执行流程：
+ * <p>执行流程:
  * <ol>
- *   <li>校验方案 + 插入 RUNNING 记录</li>
- *   <li>取账户册下 BUSINESS 叶子节点 + 关联配置 + term_ratios</li>
- *   <li>逐节点取初始状态（从 prcp_data_basic）</li>
- *   <li>按月滚动 1..monthCount，INSERT prcp_sim_result</li>
- *   <li>聚合 SUMMARY 节点（递归 CTE）</li>
- *   <li>更新 run 状态 SUCCESS</li>
+ *   <li>校验方案 + 插入 RUNNING 记录 (prcp_sim_run)</li>
+ *   <li>取账户册下 BUSINESS 叶子节点 + LEFT JOIN sim_node_config + 加载 term_ratios</li>
+ *   <li>逐节点取初始状态 (从 prcp_data_basic, T 月)</li>
+ *   <li>按月滚动 1..monthCount, 批量 INSERT prcp_sim_result (含 128 桶)</li>
+ *   <li>聚合 SUMMARY 节点 (递归 CTE 取后代叶子, 按 date_offset SUM 桶)</li>
+ *   <li>更新 run 状态 SUCCESS + duration_ms</li>
  * </ol>
  *
- * <p>算法细节见 {@link BucketMath}。
+ * <p>算法细节 (桶推算 + 月份推算 + 主指标重算) 见 {@link BucketMath}。</p>
  *
- * @author WorkBuddy Agent
- * @date 2026-09-26
+ * <p>对齐 Python: app/services/calculate_engine/new_business/engine.py</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Slf4j
 @Component
 public class NewBusinessEngine extends EngineBase {
 
+    /** 默认模拟月数 */
     public static final int DEFAULT_MONTH_COUNT = 60;
+    /** 最小模拟月数 */
     public static final int MIN_MONTH_COUNT = 1;
+    /** 最大模拟月数 */
     public static final int MAX_MONTH_COUNT = 60;
 
     @Autowired
@@ -55,6 +60,17 @@ public class NewBusinessEngine extends EngineBase {
     // 1. run — 5 步算法主流程
     // ========================================================================
 
+    /**
+     * <p>执行引擎主流程 (5 步算法), 返回运行 ID</p>
+     * <p>事务: 整个流程包在 @Transactional 里, 失败回滚</p>
+     *
+     * @param ctx      执行上下文
+     * @param schemeId 模拟方案 ID (prcp_sim_scheme.id)
+     * @param userId   当前用户 ID
+     * @param params   引擎参数, 必含 monthCount (1..60)
+     * @return run_id
+     * @throws IllegalArgumentException monthCount 越界 / 方案不存在 / 节点无基础数据
+     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long run(EngineContext ctx, Long schemeId, Long userId, Map<String, Object> params) {
@@ -489,6 +505,13 @@ public class NewBusinessEngine extends EngineBase {
     // 2. getRun — 查询单次执行
     // ========================================================================
 
+    /**
+     * <p>查询单次执行状态 (调 runMapper.selectRunById)</p>
+     *
+     * @param ctx   执行上下文 (未使用, 保留签名)
+     * @param runId 运行 ID
+     * @return 单行 Map (status/progress/duration_ms/各计数), 不存在返回 null
+     */
     @Override
     public Map<String, Object> getRun(EngineContext ctx, Long runId) {
         return runMapper.selectRunById(runId);
@@ -498,6 +521,13 @@ public class NewBusinessEngine extends EngineBase {
     // 3. listRuns — 列出执行历史
     // ========================================================================
 
+    /**
+     * <p>列出执行历史 (编程式 SQL, 支持 simSchemeId/simSchemeCode/status/limit 过滤)</p>
+     *
+     * @param ctx     执行上下文
+     * @param filters {simSchemeId, simSchemeCode, status, limit} (后三项可空)
+     * @return 运行记录 Map 列表, 按 ID DESC, limit 上限 100
+     */
     @Override
     public List<Map<String, Object>> listRuns(EngineContext ctx, Map<String, Object> filters) {
         Long simSchemeId = filters.get("simSchemeId") == null ? null : ((Number) filters.get("simSchemeId")).longValue();
@@ -535,6 +565,15 @@ public class NewBusinessEngine extends EngineBase {
     // 4. listResults — 结果快照（128 桶可选）
     // ========================================================================
 
+    /**
+     * <p>查询结果快照 (动态 SQL, 支持 runId/simSchemeCode/dateOffset/coaNodeId/category/withBuckets 过滤)</p>
+     * <p>无 runId 但有 simSchemeCode 时, 自动取该方案最近一次 SUCCESS run</p>
+     * <p>withBuckets=true 时附加 128 桶字段 (orig_m1..rem_y30), 否则仅 4 主指标</p>
+     *
+     * @param ctx     执行上下文
+     * @param filters 过滤条件 + withBuckets 标志
+     * @return 结果行 Map 列表 (LIMIT 2000)
+     */
     @Override
     public List<Map<String, Object>> listResults(EngineContext ctx, Map<String, Object> filters) {
         NamedParameterJdbcTemplate jdbc = ctx.getNamedJdbcTemplate();

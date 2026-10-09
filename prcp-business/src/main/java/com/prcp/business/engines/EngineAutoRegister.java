@@ -10,28 +10,33 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 
 /**
- * 引擎自动注册 — 启动时把 Spring 容器里所有 EngineBase 实现注册到 EngineRegistry
+ * <p>引擎自动注册 — Spring 启动时把所有 EngineBase 子类注入到 EngineRegistry</p>
  *
- * <p>对位 Python 的：
+ * <p>对齐 Python:
  * <pre>
  *   from app.services.calculate_engine.new_business import NewBusinessEngine
  *   register_engine(NewBusinessEngine())
  * </pre>
  *
- * <p>Java 端借助 Spring 自动扫描所有 EngineBase 子类，自动注册。
+ * <p>Java 端借助 Spring 自动扫描所有 EngineBase 子类 (泛型 List 注入), 自动 register。</p>
  *
- * @author WorkBuddy Agent
- * @date 2026-09-26
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Slf4j
 @Component
-@Order(1)  // 尽早执行
+@Order(1)  // 尽早执行 (ApplicationRunner 阶段)
 @RequiredArgsConstructor
 public class EngineAutoRegister implements ApplicationRunner {
 
     private final EngineRegistry registry;
     private final List<EngineBase> engines;  // Spring 自动注入所有 EngineBase 子类
 
+    /**
+     * <p>启动回调: 遍历所有 EngineBase 实现, 注册到 EngineRegistry</p>
+     *
+     * @param args Spring 启动参数
+     */
     @Override
     public void run(ApplicationArguments args) {
         if (engines == null || engines.isEmpty()) {

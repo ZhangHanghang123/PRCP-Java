@@ -10,18 +10,31 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * SimRun 基础 CRUD（增删改查）+ 单条查询
+ * <p>Mapper: prcp_sim_run 表的 SQL 访问层 (新业务模拟运行记录)</p>
  *
- * <p>历史查询（带过滤条件）由 NewBusinessEngine 用 JdbcTemplate 编程式执行
- * （mybatis XML 不支持 &lt;if&gt; 动态 SQL，@Select 注解的 &lt;script&gt; 标签在 XML 不渲染）。
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>selectRunById - 单条查询 (返回 Map 含完整字段, 便于直接转 JSON)</li>
+ *   <li>cancelRun - 取消运行 (置 status=CANCELLED, finished_at=NOW)</li>
+ *   <li>findLatestSuccessRunId - 按 sim_scheme_code 取最新 SUCCESS run_id</li>
+ * </ul>
+ * </p>
  *
- * @author WorkBuddy Agent
- * @date 2026-09-26
+ * <p>历史查询 (带过滤条件) 由 {@link com.prcp.business.engines.new_business.NewBusinessEngine}
+ * 用 JdbcTemplate 编程式执行 (mybatis XML 不支持 if 动态 SQL, @Select 注解的 script 标签在 XML 不渲染)。</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Mapper
 public interface SimRunMapper extends BaseMapper<SimRun> {
 
-    /** 单条查询：返回 Map 含完整字段（便于直接转 JSON） */
+    /**
+     * <p>单条查询: 返回 Map 含完整字段 (便于直接转 JSON)</p>
+     *
+     * @param id 运行 ID
+     * @return 单行 Map, 含 simSchemeCode/baseDataDate/monthCount/targetDataDate/status/progress/各计数/durationMs 等
+     */
     @Select({
         "SELECT id, sim_scheme_id AS simSchemeId, sim_scheme_code AS simSchemeCode,",
         "       base_data_date AS baseDataDate, month_count AS monthCount,",
@@ -37,11 +50,21 @@ public interface SimRunMapper extends BaseMapper<SimRun> {
     })
     Map<String, Object> selectRunById(@Param("id") Long id);
 
-    /** 软删除（清理某 run） */
+    /**
+     * <p>取消运行 (置 status=CANCELLED, finished_at=NOW)</p>
+     *
+     * @param id 运行 ID
+     * @return 受影响行数
+     */
     @Select("UPDATE prcp_sim_run SET status='CANCELLED', finished_at=NOW() WHERE id = #{id}")
     int cancelRun(@Param("id") Long id);
 
-    /** 按 sim_scheme_code 取最新 SUCCESS run_id（供 listResults 自动取最新 run 用） */
+    /**
+     * <p>按 sim_scheme_code 取最新 SUCCESS run_id (供 listResults 自动取最新 run 用)</p>
+     *
+     * @param simSchemeCode 模拟方案编码
+     * @return 最新 SUCCESS run 的 ID, 无返回 null
+     */
     @Select("SELECT MAX(id) FROM prcp_sim_run WHERE sim_scheme_code = #{code} AND status = 'SUCCESS'")
     Long findLatestSuccessRunId(@Param("code") String simSchemeCode);
 }

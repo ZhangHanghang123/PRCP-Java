@@ -16,10 +16,36 @@ import org.apache.ibatis.annotations.Update;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * <p>Mapper: prcp_kpi_definition / prcp_kpi_value / prcp_kpi_scheme 的统一查询入口</p>
+ *
+ * <p>主要 SQL 操作:
+ * <ul>
+ *   <li>listDefs - KPI 定义列表 (LEFT JOIN scheme/report)</li>
+ *   <li>listValues - KPI 值列表 (JOIN definition)</li>
+ *   <li>listScoreRules - 评分规则列表 (snake_case 字段名, 对齐 Python)</li>
+ *   <li>listRptItems - 报表表项 (供 KPI 公式引用)</li>
+ *   <li>listKpiSchemes - KPI 方案列表</li>
+ *   <li>selectKpiSchemeList / selectKpiSchemeById / existsScheme / insertScheme / updateKpiSchemeById - 方案 CRUD (注解版, 无 XML)</li>
+ * </ul>
+ * </p>
+ *
+ * <p>说明: 评分规则/值/分段子表的 BaseMapper CRUD 见 {@link com.prcp.business.kpi.mapper.KpiScoreRuleMapper} / {@link KpiValueMapper} / {@link KpiScoreSegmentMapper}。</p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ */
 @Mapper
 public interface KpiMapper extends BaseMapper<KpiDefinition> {
 
-    /** KPI 定义列表（连 scheme 和 report 名称） */
+    /**
+     * <p>KPI 定义列表 (LEFT JOIN prcp_kpi_scheme 取 schemeName + LEFT JOIN prcp_rpt_report 取 reportName)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param kpiCode  KPI 编码精确匹配 (可选)
+     * @param keyword  模糊搜索 (kpi_code/kpi_name)
+     * @return KPI 定义 Map 列表, 按 ID DESC
+     */
     @Select("""
         <script>
         SELECT d.id, d.scheme_id AS schemeId, s.scheme_name AS schemeName,
@@ -45,7 +71,14 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
                                         @Param("kpiCode") String kpiCode,
                                         @Param("keyword") String keyword);
 
-    /** KPI 值列表 */
+    /**
+     * <p>KPI 值列表 (JOIN prcp_kpi_definition 取 kpiCode/kpiName)</p>
+     *
+     * @param schemeId 方案 ID (可选, 通过 d.scheme_id 过滤)
+     * @param kpiId    KPI 定义 ID (可选)
+     * @param dataDate 数据日期 yyyy-MM-dd (可选)
+     * @return KPI 值 Map 列表, 按 data_date DESC, id DESC
+     */
     @Select("""
         <script>
         SELECT v.id, v.kpi_id AS kpiId, d.kpi_code AS kpiCode, d.kpi_name AS kpiName,
@@ -67,7 +100,13 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
                                            @Param("kpiId") Long kpiId,
                                            @Param("dataDate") String dataDate);
 
-    /** 评分规则列表（返回 snake_case 字段名，对齐 Python 端 list_score_rules） */
+    /**
+     * <p>评分规则列表 (snake_case 字段名, 对齐 Python 端 list_score_rules)</p>
+     *
+     * @param schemeId 方案 ID (可选)
+     * @param kpiId    KPI 定义 ID (可选)
+     * @return 评分规则 Map 列表, LEFT JOIN scheme + definition 取名称
+     */
     @Select("""
         <script>
         SELECT r.id, r.scheme_id AS scheme_id, s.scheme_code, s.scheme_name,
@@ -87,7 +126,12 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
     List<Map<String, Object>> listScoreRules(@Param("schemeId") Long schemeId,
                                               @Param("kpiId") Long kpiId);
 
-    /** 报表表项（供 KPI 公式引用） */
+    /**
+     * <p>报表表项 (供 KPI 公式引用)</p>
+     *
+     * @param rptId 报表 ID
+     * @return 表项列表 (id/itemCode/itemName/dataType), 按 item_level, sort_order 排序
+     */
     @Select("""
         SELECT id, report_id AS reportId, item_code AS itemCode, item_name AS itemName,
                data_type AS dataType
@@ -97,7 +141,11 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
     """)
     List<Map<String, Object>> listRptItems(@Param("rptId") Long rptId);
 
-    /** KPI 方案列表 */
+    /**
+     * <p>KPI 方案列表 (下拉用)</p>
+     *
+     * @return 方案列表 (id/schemeCode/schemeName/description/status), 按 ID 升序
+     */
     @Select("""
         SELECT id, scheme_code AS schemeCode, scheme_name AS schemeName,
                description, status
@@ -108,15 +156,40 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
     List<Map<String, Object>> listKpiSchemes();
 
     // ====== 方案 CRUD（注解版，无 XML） ======
+
+    /**
+     * <p>按 MyBatis-Plus Wrapper 查 KpiScheme 列表</p>
+     *
+     * @param wrapper Wrapper 条件
+     * @return KpiScheme 实体列表
+     */
     @Select("SELECT * FROM prcp_kpi_scheme ${ew.customSqlSegment}")
     List<KpiScheme> selectKpiSchemeList(@Param(Constants.WRAPPER) Wrapper<KpiScheme> wrapper);
 
+    /**
+     * <p>按 id 查 KpiScheme</p>
+     *
+     * @param id 方案 ID
+     * @return KpiScheme 实体, 不存在或已软删返回 null
+     */
     @Select("SELECT * FROM prcp_kpi_scheme WHERE id = #{id} AND is_deleted = 0")
     KpiScheme selectKpiSchemeById(@Param("id") Long id);
 
+    /**
+     * <p>检查方案是否存在 (未软删)</p>
+     *
+     * @param id 方案 ID
+     * @return 1 存在 / 0 不存在
+     */
     @Select("SELECT COUNT(*) FROM prcp_kpi_scheme WHERE id = #{id} AND is_deleted = 0")
     int existsScheme(@Param("id") Long id);
 
+    /**
+     * <p>新增 KPI 方案 (useGeneratedKeys 返回自增 ID)</p>
+     *
+     * @param s 方案实体
+     * @return 受影响行数 (通常 1)
+     */
     @Insert("""
         INSERT INTO prcp_kpi_scheme (scheme_code, scheme_name, description, kpi_count, status, is_deleted, created_by, updated_by)
         VALUES (#{schemeCode}, #{schemeName}, #{description}, #{kpiCount}, #{status}, 0, #{createdBy}, #{updatedBy})
@@ -124,6 +197,12 @@ public interface KpiMapper extends BaseMapper<KpiDefinition> {
     @org.apache.ibatis.annotations.Options(useGeneratedKeys = true, keyProperty = "id")
     int insertScheme(KpiScheme s);
 
+    /**
+     * <p>更新 KPI 方案 (动态 SET, 只更新非空字段, updated_at=NOW())</p>
+     *
+     * @param s 方案实体 (含 id)
+     * @return 受影响行数
+     */
     @Update("""
         <script>
         UPDATE prcp_kpi_scheme

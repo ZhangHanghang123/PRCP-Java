@@ -11,18 +11,23 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * LCR 参数补录 实体
- * <p>对应表 prcp_lcr_param</p>
+ * <p>实体类: 映射数据库表 prcp_lcr_param</p>
  *
- * <p>ID 规则：{scheme_code}_{node_code}_{YYYYMMDD}
- * 例如：ZX_COA_S010102010101_20251231</p>
- *
- * <p>字段分为两组：
+ * <p>字段说明:
  * <ul>
- *   <li>分子（HQLA）：isNumerator + numFactor + numOperator</li>
- *   <li>分母（30 天净流出）：isDenominator + denFactor + denOperator</li>
+ *   <li>id - 复合主键 {scheme_code}_{node_code}_{YYYYMMDD}, 例 ZX_COA_S010102010101_20251231</li>
+ *   <li>schemeId / schemeCode - 方案 ID 和编码</li>
+ *   <li>nodeId / nodeCode / nodeName - 科目节点三件套</li>
+ *   <li>dataDate - 数据日期</li>
+ *   <li>isNumerator + numFactor + numOperator - 分子三件套 (合格优质流动性资产 HQLA)</li>
+ *   <li>isDenominator + denFactor + denOperator - 分母三件套 (30 天净现金流出)</li>
+ *   <li>currentBalance - 期末余额</li>
+ *   <li>isDeleted - 软删除标记</li>
  * </ul>
  * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Data
 @TableName("prcp_lcr_param")

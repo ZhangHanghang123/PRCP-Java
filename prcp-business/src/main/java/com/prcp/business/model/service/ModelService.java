@@ -19,6 +19,35 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.*;
 
+/**
+ * <p>模型管理 Service (Model + Version + Param + Train)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>算法注册表 (7 类算法: 线性回归/逻辑斯蒂/蒙特卡洛/线性规划/蚁群/ARIMA/FNN 大模型)</li>
+ *   <li>模型 CRUD (自动创建 V1_BASELINE 初始版本)</li>
+ *   <li>模型版本 CRUD + 复制</li>
+ *   <li>参数 CRUD (关联 KPI)</li>
+ *   <li>训练任务 (异步 CompletableFuture + 状态机 RUNNING/SUCCESS/FAILED/CANCELLED)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>模型唯一约束: uk_model_code (model_code 唯一, 创建时校验)</li>
+ *   <li>版本唯一约束: (model_id, version_code), 已删除可复活</li>
+ *   <li>软删除级联: 模型删除 → 级联软删所有版本和参数</li>
+ *   <li>训练状态机: RUNNING → SUCCESS/FAILED/CANCELLED, 2 秒模拟训练</li>
+ *   <li>默认 coa_scheme_id=1 (ZXCOA_V1)</li>
+ *   <li>默认训练日期范围: 最近 12 个月</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.model.mapper.ModelMapper
+ * @see com.prcp.business.model.entity.Model
+ */
 @Service
 @RequiredArgsConstructor
 public class ModelService {
@@ -43,12 +72,20 @@ public class ModelService {
         Map.of("code", "FNN_LLM", "name", "FNN 大模型", "category", "深度学习大模型", "engine", "services/fnn_llm_engine", "desc", "前馈神经网络，适合非线性特征提取")
     );
 
-    // ============ 1. algorithms ============
+    /**
+     * <p>查询算法注册表 (7 类算法)</p>
+     *
+     * @return R.ok(Map.of("items", ALGORITHMS))
+     */
     public R<Map<String, Object>> listAlgorithms() {
         return R.ok(Collections.singletonMap("items", ALGORITHMS));
     }
 
-    // ============ 2. scheme-options ============
+    /**
+     * <p>查询关联的 KPI 方案下拉选项 (snake_case 字段)</p>
+     *
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> schemeOptions() {
         R<List<Map<String, Object>>> res = kpiService.listKpiSchemes();
         List<Map<String, Object>> schemes = res.getData();
@@ -66,14 +103,25 @@ public class ModelService {
         return R.ok(Collections.singletonMap("items", items));
     }
 
-    // ============ 3. models list ============
+    /**
+     * <p>查询模型列表 (按 model_code/name 模糊 + status 过滤)</p>
+     *
+     * @param keyword 关键字 (可选)
+     * @param status  状态 (可选)
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> listModels(String keyword, String status) {
         String kw = (keyword == null || keyword.isEmpty()) ? null : "%" + keyword + "%";
         List<Map<String, Object>> rows = modelMapper.listModels(keyword, kw, status);
         return R.ok(Collections.singletonMap("items", rows));
     }
 
-    // ============ 4. create model ============
+    /**
+     * <p>创建模型 (自动创建 V1_BASELINE 初始版本, 默认 status='ACTIVE')</p>
+     *
+     * @param body 含 model_code/name/model_type/biz_domain/kpi_scheme_id/description/status
+     * @return R.ok(Map.of("id"/"model_code"/"model_name"/"kpi_scheme_id")); model_code 重复时抛 badRequest
+     */
     @Transactional
     public R<Map<String, Object>> createModel(Map<String, Object> body) {
         String code = str(body.get("model_code"));
@@ -124,7 +172,13 @@ public class ModelService {
         return R.ok(resp);
     }
 
-    // ============ 5. update model ============
+    /**
+     * <p>更新模型 (按字段选择性更新)</p>
+     *
+     * @param mid  模型 ID (必填)
+     * @param body 待更新字段
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> updateModel(Long mid, Map<String, Object> body) {
         if (mid == null) throw BizException.badRequest("id 必填");
@@ -160,7 +214,12 @@ public class ModelService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============ 6. delete model ============
+    /**
+     * <p>软删除模型 (级联软删所有版本和参数)</p>
+     *
+     * @param mid 模型 ID (必填)
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> deleteModel(Long mid) {
         if (mid == null) throw BizException.badRequest("id 必填");
@@ -177,14 +236,26 @@ public class ModelService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============ 7. versions list ============
+    /**
+     * <p>查询版本列表</p>
+     *
+     * @param modelId 模型 ID (必填)
+     * @param keyword 关键字 (可选)
+     * @param status  状态 (可选)
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> listVersions(Long modelId, String keyword, String status) {
         String kw = (keyword == null || keyword.isEmpty()) ? null : "%" + keyword + "%";
         List<Map<String, Object>> rows = versionMapper.listVersions(modelId, keyword, kw, status);
         return R.ok(Collections.singletonMap("items", rows));
     }
 
-    // ============ 8. create version ============
+    /**
+     * <p>创建版本 (智能复活: soft-deleted 同 code 复活, active 同 code 报 409)</p>
+     *
+     * @param body 含 model_id/version_code/version_name/description/status
+     * @return R.ok(Map.of("id"/"version_code", + 可选 "reactivated", true))
+     */
     @Transactional
     public R<Map<String, Object>> createVersion(Map<String, Object> body) {
         Long mid = body.get("model_id") == null ? null : ((Number) body.get("model_id")).longValue();
@@ -230,7 +301,13 @@ public class ModelService {
         return R.ok(resp);
     }
 
-    // ============ 9. update version ============
+    /**
+     * <p>更新版本</p>
+     *
+     * @param vid  版本 ID (必填)
+     * @param body 待更新字段
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 notFound
+     */
     public R<Map<String, Object>> updateVersion(Long vid, Map<String, Object> body) {
         if (vid == null) throw BizException.badRequest("id 必填");
         ModelVersion upd = new ModelVersion();
@@ -246,7 +323,12 @@ public class ModelService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============ 10. delete version ============
+    /**
+     * <p>软删除版本 (级联软删所有参数)</p>
+     *
+     * @param vid 版本 ID (必填)
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> deleteVersion(Long vid) {
         if (vid == null) throw BizException.badRequest("id 必填");
@@ -256,7 +338,13 @@ public class ModelService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============ 11. copy version ============
+    /**
+     * <p>复制版本 (含全部参数, 新版本 status='DRAFT')</p>
+     *
+     * @param vid  源版本 ID (必填)
+     * @param body 含 version_code (必填) + version_name (可选)
+     * @return R.ok(Map.of("id"/"version_code"/"copied_params", N))
+     */
     @Transactional
     public R<Map<String, Object>> copyVersion(Long vid, Map<String, Object> body) {
         if (vid == null) throw BizException.badRequest("id 必填");
@@ -307,13 +395,23 @@ public class ModelService {
         return R.ok(resp);
     }
 
-    // ============ 12. params list ============
+    /**
+     * <p>查询参数列表</p>
+     *
+     * @param versionId 版本 ID (必填)
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> listParams(Long versionId) {
         List<Map<String, Object>> rows = paramMapper.listParams(versionId);
         return R.ok(Collections.singletonMap("items", rows));
     }
 
-    // ============ 13. create param + 14. update param + 15. delete param ============
+    /**
+     * <p>创建参数 (同步更新 version.param_count)</p>
+     *
+     * @param body 含 version_id/param_code/param_name/kpi_id/kpi_code/param_type/param_value/...
+     * @return R.ok(Map.of("id", paramId))
+     */
     @Transactional
     public R<Map<String, Object>> saveParam(Map<String, Object> body) {
         Long vid = body.get("version_id") == null ? null : ((Number) body.get("version_id")).longValue();
@@ -347,6 +445,13 @@ public class ModelService {
         return R.ok(Collections.singletonMap("id", p.getId()));
     }
 
+    /**
+     * <p>更新参数 (按字段选择性更新)</p>
+     *
+     * @param pid  参数 ID (必填)
+     * @param body 待更新字段
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> updateParam(Long pid, Map<String, Object> body) {
         if (pid == null) throw BizException.badRequest("id 必填");
@@ -374,6 +479,12 @@ public class ModelService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
+    /**
+     * <p>软删除参数 (同步更新 version.param_count)</p>
+     *
+     * @param pid 参数 ID (必填)
+     * @return R.ok(Map.of("ok", true)); 不存在时抛 notFound
+     */
     @Transactional
     public R<Map<String, Object>> deleteParam(Long pid) {
         if (pid == null) throw BizException.badRequest("id 必填");
@@ -386,7 +497,15 @@ public class ModelService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============ 16. startTrain 启动训练（写 train 记录 + 立即返回 trainId） ============
+    /**
+     * <p>启动训练 (写 train 记录 + 异步 CompletableFuture 模拟训练, 2 秒后自动 SUCCESS)</p>
+     *
+     * <p>默认 coa_scheme_id=1 (ZXCOA_V1), 默认训练日期范围=最近 12 个月</p>
+     *
+     * @param mid  模型 ID (必填)
+     * @param body 含 version_id (必填) + coa_scheme_id/balance_date_from/balance_date_to/description
+     * @return R.ok(Map.of("ok"/"train_id"/"train_code"/"status", "RUNNING"))
+     */
     @Transactional
     public R<Map<String, Object>> startTrain(Long mid, Map<String, Object> body) {
         if (mid == null) throw BizException.badRequest("model_id 必填");
@@ -445,7 +564,12 @@ public class ModelService {
         return R.ok(resp);
     }
 
-    // ============ 17. cancelTrain 取消训练 ============
+    /**
+     * <p>取消训练 (RUNNING 状态可取消, 其他状态抛错)</p>
+     *
+     * @param body 含 train_id (必填)
+     * @return R.ok(Map.of("ok", true)); 不存在或已结束时抛错
+     */
     @Transactional
     public R<Map<String, Object>> cancelTrain(Map<String, Object> body) {
         Long trainId = body.get("train_id") == null ? null : ((Number) body.get("train_id")).longValue();
@@ -462,7 +586,13 @@ public class ModelService {
         return R.ok(Collections.singletonMap("ok", true));
     }
 
-    // ============ 18. trainLogs 取训练日志（轮询） ============
+    /**
+     * <p>查询训练日志 (轮询单条 train 详情)</p>
+     *
+     * @param mid     模型 ID (必填, 校验用)
+     * @param trainId 训练记录 ID (可选)
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> trainLogs(Long mid, Long trainId) {
         if (mid == null) throw BizException.badRequest("model_id 必填");
         List<Map<String, Object>> logs = new java.util.ArrayList<>();
@@ -484,7 +614,13 @@ public class ModelService {
         return R.ok(Collections.singletonMap("items", logs));
     }
 
-    // ============ 19. trainResults 取训练结果（关联 prcp_model_train_result） ============
+    /**
+     * <p>查询训练结果 (关联 prcp_model_train_result, 当前为空数组)</p>
+     *
+     * @param modelId 模型 ID
+     * @param trainId 训练记录 ID (预留)
+     * @return R.ok(Map.of("items", list))
+     */
     public R<Map<String, Object>> trainResults(Long modelId, Long trainId) {
         // 简化：返回当前 trains 列表（如有 trainId 则限定）
         List<Map<String, Object>> items = new java.util.ArrayList<>();

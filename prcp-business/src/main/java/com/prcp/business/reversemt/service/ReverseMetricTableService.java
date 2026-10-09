@@ -10,6 +10,29 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+/**
+ * <p>反算指标结果表 Service (行转列 + 5 期透视)</p>
+ *
+ * <p>核心职责:
+ * <ol>
+ *   <li>查询指标透视表 (行=scheme|node|metric, 列=日期 × [current, y1..y5])</li>
+ *   <li>列出所有方案 (供下拉选项)</li>
+ *   <li>列出所有指标 (供下拉选项)</li>
+ * </ol>
+ * </p>
+ *
+ * <p>关键约定:
+ * <ul>
+ *   <li>行维度: (schemeCode, nodeCode, metricCode, metricLabel, nodeName)</li>
+ *   <li>列维度: dataDate × 6 个值 (current + y1..y5)</li>
+ *   <li>排序: schemeCode → metricCode → nodeCode; cell 按 dataDate 升序</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
+ * @see com.prcp.business.reversemt.mapper.ReverseMetricTableMapper
+ */
 @Service
 @RequiredArgsConstructor
 public class ReverseMetricTableService {
@@ -17,9 +40,15 @@ public class ReverseMetricTableService {
     private final ReverseMetricTableMapper mapper;
 
     /**
-     * 反算指标结果表：把行转成 行 = (scheme_code, node_code, metric_code, metric_label, node_name)，
-     * 列 = 12 个月度数据日期，单元 = current_value
-     * 同时附上 y1/y2/y3/y4/y5 → 5 个指标（currentValue + 未来 5 年）的透视结果
+     * <p>反算指标结果表 (行转列)</p>
+     *
+     * <p>行 = (scheme_code, node_code, metric_code, metric_label, node_name), 列 = 日期, 单元 = currentValue + y1..y5</p>
+     *
+     * @param schemeCode 反算方案编码 (可选)
+     * @param metricCode 指标编码 (可选)
+     * @param fromDate   起始日期 (可选)
+     * @param toDate     结束日期 (可选)
+     * @return Map.of("dates", sorted list, "rows", rows, "totalRows", count)
      */
     public Map<String, Object> query(String schemeCode, String metricCode, String fromDate, String toDate) {
         List<Map<String, Object>> raw = mapper.queryTable(schemeCode, metricCode, fromDate, toDate);
@@ -91,10 +120,20 @@ public class ReverseMetricTableService {
         return out;
     }
 
+    /**
+     * <p>列出所有反算方案 (供下拉选项)</p>
+     *
+     * @return 方案编码字符串列表
+     */
     public List<String> listSchemes() {
         return mapper.listSchemes();
     }
 
+    /**
+     * <p>列出所有指标 (供下拉选项)</p>
+     *
+     * @return 指标 Map 列表
+     */
     public List<Map<String, Object>> listMetrics() {
         return mapper.listMetrics();
     }

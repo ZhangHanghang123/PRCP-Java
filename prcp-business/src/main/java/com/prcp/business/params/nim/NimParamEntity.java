@@ -10,9 +10,23 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * NIM 参数补录（净息差计量参数）
- * <p>对应表 prcp_nim_param</p>
- * <p>主键由业务生成（复合字符串 ID）：{scheme_code}_{node_code}_{YYYYMMDD}</p>
+ * <p>实体类: 映射数据库表 prcp_nim_param</p>
+ *
+ * <p>字段说明:
+ * <ul>
+ *   <li>id - 复合主键 {scheme_code}_{node_code}_{YYYYMMDD} (业务生成, 非自增)</li>
+ *   <li>schemeId / schemeCode - 方案 ID 和编码</li>
+ *   <li>nodeId / nodeCode / nodeName - 科目节点三件套</li>
+ *   <li>dataDate - 数据日期</li>
+ *   <li>isInterestAsset + assetRate + assetOperator + assetCategory - 生息资产四件套 (分子)</li>
+ *   <li>isInterestLiability + liabilityRate + liabilityOperator + liabilityCategory - 计息负债四件套 (分母)</li>
+ *   <li>currentBalance - 期末余额</li>
+ *   <li>isDeleted - 软删除标记</li>
+ * </ul>
+ * </p>
+ *
+ * @author zhanghh
+ * @since 2026-10-09
  */
 @Data
 @TableName("prcp_nim_param")

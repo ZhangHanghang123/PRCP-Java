@@ -4,71 +4,96 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 引擎抽象基类（对位 Python app.services.calculate_engine.base.EngineBase）
+ * <p>引擎抽象基类 (对位 Python app/services/calculate_engine/base.py EngineBase)</p>
  *
- * <p>设计目的：
+ * <p>设计目的 (Strategy Pattern + 抽象工厂):
+ * <ul>
+ *   <li>所有引擎对外暴露同一套接口: run / getRun / listRuns / listResults</li>
+ *   <li>子类必须设置 engineType / engineName</li>
+ *   <li>由 {@link EngineRegistry} 维护单例表, 由 {@link EngineAutoRegister} 自动注册</li>
+ * </ul>
+ * </p>
+ *
+ * <p>核心契约:
  * <pre>
- *   所有引擎对外暴露同一套接口：
- *     run(db, scheme_id, user, params...)      → 执行，返回 run_id
- *     getRun(db, runId)                         → 查询单次执行
- *     listRuns(db, filters...)                  → 执行历史
- *     listResults(db, filters...)               → 结果快照
- *
- *   子类必须设置 engineType / engineName
+ *   run(ctx, schemeId, userId, params)         → Long run_id
+ *   getRun(ctx, runId)                          → Map 单次执行
+ *   listRuns(ctx, filters)                      → List 历史
+ *   listResults(ctx, filters)                   → List 结果快照
  * </pre>
  *
- * <p>对齐 Python：{@code app/services/calculate_engine/base.py}
- *
- * @author WorkBuddy Agent
- * @date 2026-09-26
+ * @author zhanghh
+ * @since 2026-10-09
  */
 public abstract class EngineBase {
 
-    // ===== 元数据（子类必须设置） =====
-
-    /** 引擎类型标识（如 "new_business"） */
+    /** 引擎类型标识 (如 "new_business") — 子类必须设置 */
     protected String engineType;
 
-    /** 人类可读名称（如 "新业务模拟引擎"） */
+    /** 人类可读名称 (如 "新业务模拟引擎") — 子类必须设置 */
     protected String engineName;
 
-    // ===== 业务接口（子类必须实现） =====
-
     /**
-     * 执行引擎，返回 run_id
+     * <p>执行引擎, 返回 run_id</p>
      *
-     * @param ctx       执行上下文（含 dataSource 等资源；与 Python 不同，Java 端用 dataSource + sqlHelper 组合）
-     * @param schemeId  业务方案 id
-     * @param userId    当前用户 id
-     * @param params    引擎特定参数（如 monthCount）
+     * @param ctx      执行上下文 (含 DataSource + JdbcTemplate)
+     * @param schemeId 业务方案 ID
+     * @param userId   当前用户 ID
+     * @param params   引擎特定参数 (如 monthCount)
+     * @return run_id (主键)
      */
     public abstract Long run(EngineContext ctx, Long schemeId, Long userId, Map<String, Object> params);
 
     /**
-     * 查询单次执行状态
+     * <p>查询单次执行状态</p>
+     *
+     * @param ctx  执行上下文
+     * @param runId 运行 ID
+     * @return 单行 Map (status/progress/duration_ms 等), 不存在返回 null
      */
     public abstract Map<String, Object> getRun(EngineContext ctx, Long runId);
 
     /**
-     * 列出执行历史
+     * <p>列出执行历史</p>
+     *
+     * @param ctx     执行上下文
+     * @param filters 过滤条件 (simSchemeId/simSchemeCode/status/limit)
+     * @return 运行记录 Map 列表
      */
     public abstract List<Map<String, Object>> listRuns(EngineContext ctx, Map<String, Object> filters);
 
     /**
-     * 查询结果快照
+     * <p>查询结果快照</p>
+     *
+     * @param ctx     执行上下文
+     * @param filters 过滤条件 (runId/simSchemeCode/dateOffset/coaNodeId/category/withBuckets)
+     * @return 结果行 Map 列表
      */
     public abstract List<Map<String, Object>> listResults(EngineContext ctx, Map<String, Object> filters);
 
-    // ===== 辅助方法 =====
-
+    /**
+     * <p>取引擎类型标识</p>
+     *
+     * @return engineType 字符串
+     */
     public String getEngineType() {
         return engineType;
     }
 
+    /**
+     * <p>取引擎显示名</p>
+     *
+     * @return engineName 字符串
+     */
     public String getEngineName() {
         return engineName;
     }
 
+    /**
+     * <p>取引擎元信息</p>
+     *
+     * @return {engine_type, engine_name}
+     */
     public Map<String, Object> info() {
         java.util.LinkedHashMap<String, Object> m = new java.util.LinkedHashMap<>();
         m.put("engine_type", engineType);
@@ -76,6 +101,11 @@ public abstract class EngineBase {
         return m;
     }
 
+    /**
+     * <p>toString: 用于日志/调试</p>
+     *
+     * @return "&lt;ClassName type=xxx&gt;"
+     */
     @Override
     public String toString() {
         return "<" + getClass().getSimpleName() + " type=" + engineType + ">";
