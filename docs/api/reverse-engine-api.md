@@ -1,9 +1,117 @@
 # 测算方案 (Reverse) 引擎接口文档
 
-> 版本: 2026-10-09 v2
+> 版本: 2026-10-09 v3
 > 用途: 封装「测算方案」页面的【运行】按钮调用报文，支持将反算引擎部署到独立服务器
 > 源模块: `com.prcp.business.reverse.ReverseController` + `prcp-vue/src/views/reverse/Index.vue`
 > 数据库: `prcp_db` (prcp_reverse_scheme / prcp_reverse_target / prcp_kpi_scheme / prcp_kpi_score_rule / prcp_kpi_score_segment / prcp_kpi_definition / prcp_{cet1,lcr,nim,nsfr,roe,eve}_param)
+
+---
+
+## 〇、报文内容说明 (总览)
+
+主服务收到【运行】按钮请求后，按下列规则从数据库组装报文，再 HTTP 提交给独立引擎服务器。
+
+### 0.1 报文主体清单 (4 段)
+
+| 段 | 报文字段 | 业务含义 | 来源数据 |
+|---|---|---|---|
+| **①** | `scheme` | **测算方案实体** | `prcp_reverse_scheme` (按 scheme_id 取一条) |
+| **②** | `targets[]` | **目标设置集合** | `prcp_reverse_target` (按测算方案编码查询) |
+| **③** | `kpi_schemes[]` | **指标评分方案集合** | 由测算方案的「计量模型」查到 `prcp_kpi_scheme`，再关联 `prcp_kpi_score_rule` + `prcp_kpi_score_segment` + `prcp_kpi_definition`，封装为集合 |
+| **④** | `kpi_params` | **指标计量参数集合** | 根据测算方案的「数据日期」，分别查 6 张参数补录表，每张表查出的多行封装为集合 |
+
+### 0.2 各段详细来源说明
+
+#### ① 测算方案实体 (1 条)
+- 直接按 `scheme_id` 取 `prcp_reverse_scheme` 单条记录
+- 同时附带 `prcp_model` (via `model_id`) 和 `prcp_coa_scheme` (via `coa_scheme_id`) 的展示字段
+- **关键字段**: `scheme_code` / `data_date` / `horizon_months` / `algorithm` / `model_id` / `coa_scheme_id`
+
+#### ② 目标设置集合 (多条)
+- 按 `scheme_code = {测算方案编码}` 查询 `prcp_reverse_target`
+- 关联 `prcp_kpi_definition` 查 KPI 名称
+- 排序: `sort_order ASC`
+
+#### ③ 指标评分方案集合 (多条)
+查询链路分 4 步:
+1. **根据测算方案的「计量模型」** (KPI 评分方案编码) → `prcp_kpi_scheme` 取方案主记录
+2. `prcp_kpi_scheme.id = prcp_kpi_score_rule.scheme_id` → 拉所有「指标评分规则」
+3. `prcp_kpi_score_rule.id = prcp_kpi_score_segment.rule_id` → 每条规则拉对应「评分段」 (PIECEWISE) 或「锚点」 (LINEAR)
+4. `prcp_kpi_score_rule.kpi_id = prcp_kpi_definition.id` → 拉「指标详情」 (公式 / 公式说明 / 单位 / 阈值)
+
+> 引擎收到此段后，按 `calc_method` 分派:
+> - `PIECEWISE` → 落入第一段 `[min_value, max_value]` 的 `score`
+> - `LINEAR` → 按锚点 `(x, score)` 线性插值
+
+#### ④ 指标计量参数集合 (6 张表 × 每表多条)
+- 根据测算方案的 **`data_date`** 同时查 6 张参数补录表
+- 同一 `scheme_code` + `data_date` 下的所有行
+- 每张表封装为 `kpi_params.{cet1,lcr,nim,nsfr,roe,eve}` 一个数组
+
+| 子段 | 数据表 | 分子 / 分母字段 |
+|---|---|---|
+| `cet1` | `prcp_cet1_param` | 分子(核心一级资本) / 分母(RWA 风险加权资产) |
+| `lcr`  | `prcp_lcr_param`  | 分子(HQLA 合格优质流动性资产) / 分母(30 天净现金流出) |
+| `nim`  | `prcp_nim_param`  | 分子(生息资产 + 利率) / 分母(计息负债 + 利率) |
+| `nsfr` | `prcp_nsfr_param` | 分子(ASF 可用稳定资金) / 分母(RSF 所需稳定资金) |
+| `roe`  | `prcp_roe_param`  | 分子(净利润) / 分母(净资产) |
+| `eve`  | `prcp_eve_param`  | 资产(利率敏感性 + 久期) / 负债(利率敏感性 + 久期) |
+
+> 各表主键约定: `{scheme_code}_{node_code}_{YYYYMMDD}` (复合主键)
+
+### 0.3 调用时序图
+
+```
+┌──────────┐        ┌──────────────┐         ┌──────────────┐
+│   Vue    │        │ 主服务 (Java)│         │  引擎服务器    │
+└────┬─────┘        └──────┬───────┘         └──────┬───────┘
+     │                    │                         │
+     │ 1.【运行】点击      │                         │
+     ├───────────────────►│                         │
+     │                    │ 2. POST /reverse/runs   │
+     │                    │    status=PENDING       │
+     │ ←── {id, run_code}─┤                         │
+     │                    │ 3. 按「报文内容说明 0.1」 组装 4 段
+     │                    │    (本服务是数据搬运工)    │
+     │                    │                         │
+     │                    │ 4. POST /api/v1/reverse/execute
+     │                    ├────────────────────────►
+     │                    │    POST 立刻返回 ACK    │
+     │                    │ ←── {accepted: true}───┤
+     │                    │                         │
+     │                    │  ← 异步求解...          │
+     │                    │  ← 计算完成             │
+     │                    │ ←  5. POST /reverse/runs/{rid}/callback
+     │                    │     {status:SUCCESS,    │
+     │                    │      results: [...]}    │
+     │                    │                         │
+     │ 6. 轮询结果         │                         │
+     │ GET /runs/{rid}    │                         │
+     ├───────────────────►│                         │
+     │ ←── 计算结果 ──────►│                         │
+```
+
+### 0.4 报文顶层结构速查
+
+```jsonc
+{
+  // ─── HTTP/链路元数据 ───
+  "request_id":    "req-20261009-1734567890123-abc123",
+  "submitted_at":  "2026-10-09T16:13:04+08:00",
+  "submitted_by":  "admin",
+  "callback":      { "url": "...", "method": "POST", "auth_token": "...", "timeout_sec": 60 },
+  "run":           { "id": 100, "run_code": "RR1734567890123" },
+
+  // ─── 报文主体 (4 段, 详见 § 三) ───
+  "scheme":        { ... },   // ① 测算方案实体                       ← § 4.2
+  "targets":       [ ... ],   // ② 目标设置集合                       ← § 4.3
+  "kpi_schemes":   [ ... ],   // ③ 指标评分方案集合 (含评分规则/段)   ← § 4.4
+  "kpi_params":    { ... },   // ④ 指标计量参数集合 (6 张参数表)       ← § 4.5
+
+  // ─── 算法超参 (可选) ───
+  "params":        { ... }    // 学习率/轮数/种子等                  ← § 4.6
+}
+```
 
 ---
 
