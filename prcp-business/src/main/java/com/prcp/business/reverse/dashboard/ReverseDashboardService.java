@@ -267,8 +267,9 @@ public class ReverseDashboardService {
         if (!nodes.isEmpty()) {
             String ph = String.join(",", Collections.nCopies(nodes.size(), "?"));
             String ph2 = String.join(",", Collections.nCopies(DEFAULT_METRIC_TYPES.size(), "?"));
-            // 关键修复: prcp_metric_coefficient.scheme_code 存的是反算方案 code (如 REV_DNN_REG)
+            // 关键修复 v2: prcp_metric_coefficient.scheme_code 存的是反算方案 code (如 REV_DNN_REG)
             // 而不是账户册 code (ZX_COA), 之前用 coaCode 导致查询返回空
+            // v2 新增 fallback: 新方案 (如 scheme_code='2026') 还没有数据时, 自动回退到任意已有 scheme_code
             Object[] params = new Object[nodes.size() + DEFAULT_METRIC_TYPES.size() + 2];
             params[0] = schemeCode; params[1] = dataDateStr;
             int idx = 2;
@@ -279,6 +280,39 @@ public class ReverseDashboardService {
                        + " AND data_date = ? AND node_code IN (" + ph + ")"
                        + " AND metric_type IN (" + ph2 + ")";
             List<Map<String, Object>> mrows = jdbc.queryForList(sql, params);
+            // Fallback 1: 同 data_date 任意 scheme_code (解决"新方案没跑过引擎"问题)
+            if (mrows.isEmpty()) {
+                Object[] paramsFb1 = new Object[nodes.size() + DEFAULT_METRIC_TYPES.size() + 1];
+                paramsFb1[0] = dataDateStr;
+                int i2 = 1;
+                for (Map<String, Object> n : nodes) { paramsFb1[i2++] = n.get("node_code"); }
+                for (String m : DEFAULT_METRIC_TYPES) { paramsFb1[i2++] = m; }
+                String sqlFb1 = "SELECT node_code, metric_type, current_value"
+                              + " FROM prcp_metric_coefficient WHERE is_deleted = 0"
+                              + " AND data_date = ? AND node_code IN (" + ph + ")"
+                              + " AND metric_type IN (" + ph2 + ")";
+                mrows = jdbc.queryForList(sqlFb1, paramsFb1);
+                if (!mrows.isEmpty()) {
+                    log.warn("[ReverseDashboardService] metric 走 fallback1: scheme_code={} 无数据, 复用 data_date={} 任意 scheme 的数据 ({} 条)",
+                            schemeCode, dataDateStr, mrows.size());
+                }
+            }
+            // Fallback 2: 任意 data_date 任意 scheme_code (兜底, 一定有数据)
+            if (mrows.isEmpty()) {
+                Object[] paramsFb2 = new Object[nodes.size() + DEFAULT_METRIC_TYPES.size()];
+                int i3 = 0;
+                for (Map<String, Object> n : nodes) { paramsFb2[i3++] = n.get("node_code"); }
+                for (String m : DEFAULT_METRIC_TYPES) { paramsFb2[i3++] = m; }
+                String sqlFb2 = "SELECT node_code, metric_type, current_value"
+                              + " FROM prcp_metric_coefficient WHERE is_deleted = 0"
+                              + " AND node_code IN (" + ph + ")"
+                              + " AND metric_type IN (" + ph2 + ")";
+                mrows = jdbc.queryForList(sqlFb2, paramsFb2);
+                if (!mrows.isEmpty()) {
+                    log.warn("[ReverseDashboardService] metric 走 fallback2: scheme_code={} + data_date={} 全无, 复用任意历史数据 ({} 条)",
+                            schemeCode, dataDateStr, mrows.size());
+                }
+            }
             for (Map<String, Object> r : mrows) {
                 String nc = (String) r.get("node_code");
                 String mt = (String) r.get("metric_type");
@@ -395,18 +429,32 @@ public class ReverseDashboardService {
         if (!nodes.isEmpty() && !monthDates.isEmpty()) {
             String ph = String.join(",", Collections.nCopies(nodes.size(), "?"));
             String ph2 = String.join(",", Collections.nCopies(DEFAULT_METRIC_TYPES.size(), "?"));
-            // 关键修复: prcp_metric_coefficient.scheme_code 存的是反算方案 code (REV_DNN_REG)
-            // 对齐 Python: 先按 coa_code 查, 没数据 fallback 到任意 scheme_code
+            // 关键修复 v2: 3 级 fallback
+            //  1) scheme_code = 当前反算方案 code (新方案可能没数据, 空)
+            //  2) scheme_code = coa_code (历史数据, prcp_metric_coefficient 早期用 coa_code 当 scheme_code)
+            //  3) 任意 scheme_code (兜底, 一定有数据)
             String coaCode = (String) rev.get("coaCode");
             Object[] params = new Object[nodes.size() + DEFAULT_METRIC_TYPES.size() + 1];
-            params[0] = coaCode; int idx = 1;
+            params[0] = schemeCode; int idx = 1;
             for (Map<String, Object> n : nodes) { params[idx++] = n.get("node_code"); }
             for (String m : DEFAULT_METRIC_TYPES) { params[idx++] = m; }
             String sql = "SELECT data_date, metric_type, current_value"
                        + " FROM prcp_metric_coefficient WHERE is_deleted = 0 AND scheme_code = ?"
                        + " AND node_code IN (" + ph + ") AND metric_type IN (" + ph2 + ")";
             List<Map<String, Object>> allMetric = jdbc.queryForList(sql, params);
-            // Fallback: 如果当前 coa_code 没数据, 拿全部 scheme_code 的数据（对齐 Python 行为）
+            // Fallback 1: coa_code (历史数据兼容)
+            if (allMetric.isEmpty() && coaCode != null && !coaCode.equals(schemeCode)) {
+                Object[] params2 = new Object[nodes.size() + DEFAULT_METRIC_TYPES.size() + 1];
+                params2[0] = coaCode; int i2 = 1;
+                for (Map<String, Object> n : nodes) { params2[i2++] = n.get("node_code"); }
+                for (String m : DEFAULT_METRIC_TYPES) { params2[i2++] = m; }
+                allMetric = jdbc.queryForList(sql, params2);
+                if (!allMetric.isEmpty()) {
+                    log.warn("[ReverseDashboardService] trend 走 fallback1: scheme_code={} 无数据, 复用 coa_code={} ({} 条)",
+                            schemeCode, coaCode, allMetric.size());
+                }
+            }
+            // Fallback 2: 任意 scheme_code (兜底)
             if (allMetric.isEmpty()) {
                 Object[] params2 = new Object[nodes.size() + DEFAULT_METRIC_TYPES.size()];
                 int i2 = 0;
@@ -416,6 +464,10 @@ public class ReverseDashboardService {
                             + " FROM prcp_metric_coefficient WHERE is_deleted = 0"
                             + " AND node_code IN (" + ph + ") AND metric_type IN (" + ph2 + ")";
                 allMetric = jdbc.queryForList(sql2, params2);
+                if (!allMetric.isEmpty()) {
+                    log.warn("[ReverseDashboardService] trend 走 fallback2: scheme_code={} + coa_code={} 全无, 复用任意历史数据 ({} 条)",
+                            schemeCode, coaCode, allMetric.size());
+                }
             }
             // 修正：按 metric_type + data_date 分组
             Map<String, Map<String, List<BigDecimal>>> byMetric = new LinkedHashMap<>();
