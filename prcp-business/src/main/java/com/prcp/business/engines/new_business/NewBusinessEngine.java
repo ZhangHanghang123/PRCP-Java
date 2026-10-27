@@ -18,21 +18,32 @@ import java.time.LocalDate;
 import java.util.*;
 
 /**
- * <p>新业务模拟引擎 — 5 步按月滚动算法 (对位 Python app/services/calculate_engine/new_business/engine.py)</p>
+ * <p>新业务模拟引擎 — 5 步按月滚动算法 (对位 Python app/services/calculate_engine/new_business/engine.py <b>v2.4</b>)</p>
+ *
+ * <p><b>版本对齐说明</b>: 已从 v1 口径升级到 Python v2.4 (2026-10-23, commit fe514d3),
+ * 核心变更 3 处 (都会导致全部数值结果错误):</p>
+ * <ol>
+ *   <li><b>rem_* 桶 = 绝对到期月</b>, 不再每月前移 (见 {@link BucketMath#applyTermSplit})</li>
+ *   <li><b>orig_* 桶 = 只进不出</b> (记录投放时的原始期限累计额)</li>
+ *   <li><b>投放量 = 固定年增量 × 节奏权重</b> (不再是「余额 × 增长率」)</li>
+ * </ol>
  *
  * <p>执行流程:
  * <ol>
  *   <li>校验方案 + 插入 RUNNING 记录 (prcp_sim_run)</li>
- *   <li>取账户册下 BUSINESS 叶子节点 + LEFT JOIN sim_node_config + 加载 term_ratios</li>
- *   <li>逐节点取初始状态 (从 prcp_data_basic, T 月)</li>
- *   <li>按月滚动 1..monthCount, 批量 INSERT prcp_sim_result (含 128 桶)</li>
+ *   <li>取账户册叶子节点 (NOT EXISTS(child) 判定) + LEFT JOIN sim_node_config</li>
+ *   <li>逐节点取初始状态 (从 prcp_data_basic) + 批量加载 3 类配置
+ *       (term_ratios / growth_config / rhythm)</li>
+ *   <li>按月滚动 1..monthCount (v2.4 12 步), 延后 INSERT prcp_sim_result (含 128 桶 + 7 追踪列)</li>
+ *   <li>回填「完整 60 月到期排期」到每一行 (v2.4 full_plan)</li>
+ *   <li>统一批量 INSERT (500 行/批)</li>
  *   <li>聚合 SUMMARY 节点 (递归 CTE 取后代叶子, 按 date_offset SUM 桶)</li>
  *   <li>更新 run 状态 SUCCESS + duration_ms</li>
  * </ol>
  *
  * <p>算法细节 (桶推算 + 月份推算 + 主指标重算) 见 {@link BucketMath}。</p>
  *
- * <p>对齐 Python: app/services/calculate_engine/new_business/engine.py</p>
+ * <p>对齐 Python: app/services/calculate_engine/new_business/engine.py (v2.4)</p>
  *
  * @author zhanghh
  * @since 2026-10-09
@@ -116,8 +127,8 @@ public class NewBusinessEngine extends EngineBase {
                         + dataDate + " 月有基础数据，请先维护 prcp_data_basic");
             }
 
-            // 步骤 3: 取每个叶子节点的初始状态 + 加载 term_ratios
-            List<NodeData> nodesData = initNodesData(jdbc, leafNodes, dataDate);
+            // 步骤 3: 取每个叶子节点的初始状态 + 加载 3 类配置
+            List<NodeData> nodesData = initNodesData(jdbc, leafNodes, dataDate, monthCount);
             int configuredCount = (int) nodesData.stream().filter(n -> n.isConfigured).count();
             int rolledCount = nodesData.size() - configuredCount;
             log.info("叶子节点数: total={}, configured={}, rolled-only={}", nodesData.size(), configuredCount, rolledCount);
@@ -143,21 +154,41 @@ public class NewBusinessEngine extends EngineBase {
         }
     }
 
-    /** 单个节点的运行时数据 */
+    /** 单个节点的运行时数据 (v2.4) */
     static class NodeData {
         Long coaNodeId;
         String nodeCode;
         String nodeName;
         Integer nodeLevel;
         String category;
+        /** v2.1: 是否模型测算 (is_model_calc=1) —— 与「有无配置」共同决定分支 */
         boolean isConfigured;
         BigDecimal growthRate;
         List<Map<String, Object>> termRatios;
         Map<String, BigDecimal> state;
 
+        // ===== v2.1 新增: 增长配置 =====
+        /** 增长方式 1=目标增长百分比 2=目标增长绝对值 3=增长百分比 4=增长值 */
+        int growthType = 1;
+        /** 第 1~5 年的增长参数 */
+        BigDecimal[] yearValues = new BigDecimal[5];
+        /** 金额单位换算系数 (WAN=1e4, YI=1e8) */
+        BigDecimal unitScale = new BigDecimal("10000");
+        /** 12 个月节奏权重 (和为 100) */
+        List<BigDecimal> rhythmWeights = BucketMath.defaultLinearWeights();
+
+        // ===== v2.4 新增: 完整 60 月到期排期 =====
+        /** 完整排期容器 (绝对到期月 → 累计投放落点) */
+        Map<Integer, BigDecimal> fullPlan = new LinkedHashMap<>();
+        /** 累计计划投放 */
+        BigDecimal cumPlanned = BigDecimal.ZERO;
+        /** v2.1: 年初余额锚定 (growth_type=4 时每年 1 月记录一次) */
+        BigDecimal yearBaseBalance;
+
         static NodeData of() {
             NodeData n = new NodeData();
             n.termRatios = new ArrayList<>();
+            for (int i = 0; i < 5; i++) n.yearValues[i] = BigDecimal.ZERO;
             return n;
         }
     }
@@ -184,13 +215,26 @@ public class NewBusinessEngine extends EngineBase {
         return jdbc.queryForObject("SELECT LAST_INSERT_ID()", new MapSqlParameterSource(), Long.class);
     }
 
+    /**
+     * <p>步骤 2: 取账户册叶子节点 + 关联配置</p>
+     *
+     * <p><b>v2.4 修正</b>:
+     * <ul>
+     *   <li>叶子判定从硬筛 {@code node_type='BUSINESS'} 改为 {@code NOT EXISTS(child)}
+     *       (与 Python 一致) —— 硬筛会因账户册 node_type 取值不统一而取不到任何节点</li>
+     *   <li>补 {@code n.is_deleted = 0}</li>
+     *   <li>补 {@code is_model_calc} / {@code rhythm_type} 字段 (v2.1 分支判定需要)</li>
+     * </ul>
+     * </p>
+     */
     private List<Map<String, Object>> loadLeafNodes(NamedParameterJdbcTemplate jdbc, Long schemeId, Long coaSchemeId, LocalDate baseDate) {
         String sql = "SELECT n.id AS coa_node_id, n.node_code, n.node_name, n.node_level, n.parent_id, n.path,"
-                + "       c.id AS cfg_id, c.annual_growth_rate"
+                + "       c.id AS cfg_id, c.annual_growth_rate, c.is_model_calc, c.rhythm_type"
                 + "  FROM prcp_coa_node n"
                 + "  JOIN prcp_data_basic b ON b.coa_node_id = n.id AND b.data_date = :bd AND b.is_deleted = 0"
                 + "  LEFT JOIN prcp_sim_node_config c ON c.coa_node_id = n.id AND c.scheme_id = :sid AND c.is_deleted = 0"
-                + " WHERE n.scheme_id = :coa_sid AND n.node_type = 'BUSINESS'"
+                + " WHERE n.scheme_id = :coa_sid AND n.is_deleted = 0"
+                + "   AND NOT EXISTS (SELECT 1 FROM prcp_coa_node ch WHERE ch.parent_id = n.id AND ch.is_deleted = 0)"
                 + " ORDER BY n.path, n.id";
         MapSqlParameterSource p = new MapSqlParameterSource()
                 .addValue("sid", schemeId)
@@ -199,12 +243,41 @@ public class NewBusinessEngine extends EngineBase {
         return jdbc.queryForList(sql, p);
     }
 
-    private List<NodeData> initNodesData(NamedParameterJdbcTemplate jdbc, List<Map<String, Object>> leafNodes, LocalDate baseDate) {
+    /**
+     * <p>步骤 3: 取每个叶子节点的初始状态 + 加载 3 类配置</p>
+     *
+     * <p><b>v2.4 修正</b>: 3 类配置改为<b>批量查询</b> (Python 用 3 次批量, 原 Java 用 3N 次逐节点查询):
+     * <ol>
+     *   <li>{@code prcp_sim_term_ratio} — 期限占比</li>
+     *   <li>{@code prcp_sim_growth_config} — 增长方式 + 5 年参数</li>
+     *   <li>{@code prcp_sim_rhythm} — 12 个月节奏权重</li>
+     * </ol>
+     *
+     * <p><b>v2.1 分支判定</b>: {@code is_configured = (cfg_id != null) && (is_model_calc == 1)}
+     * —— 原 Java 只看 cfg_id != null, 会把「存量保持」节点误判为「模型测算」节点。</p>
+     */
+    private List<NodeData> initNodesData(NamedParameterJdbcTemplate jdbc, List<Map<String, Object>> leafNodes,
+                                          LocalDate baseDate, int monthCount) {
+        // ---- 批量加载 3 类配置 ----
+        List<Long> cfgIds = new ArrayList<>();
+        for (Map<String, Object> row : leafNodes) {
+            Number cfgId = (Number) row.get("cfg_id");
+            if (cfgId != null) cfgIds.add(cfgId.longValue());
+        }
+        Map<Long, List<Map<String, Object>>> ratiosByCfg = loadTermRatiosBatch(jdbc, cfgIds);
+        Map<Long, Map<String, Object>> growthByCfg = loadGrowthConfigBatch(jdbc, cfgIds);
+        Map<Long, List<Map<String, Object>>> rhythmByCfg = loadRhythmBatch(jdbc, cfgIds);
+
         List<NodeData> result = new ArrayList<>();
         for (Map<String, Object> row : leafNodes) {
             Long coaNodeId = ((Number) row.get("coa_node_id")).longValue();
-            Number cfgId = (Number) row.get("cfg_id");
-            boolean isConfigured = cfgId != null;
+            Number cfgIdNum = (Number) row.get("cfg_id");
+            Long cfgId = cfgIdNum == null ? null : cfgIdNum.longValue();
+
+            // v2.1: 分支判定 = 有配置 且 is_model_calc == 1
+            // ⚠️ is_model_calc / rhythm_type 是 tinyint(1), MySQL 驱动默认映射为 Boolean, 不能直接 (Number) 强转
+            int isModelCalc = intOf(row.get("is_model_calc"), 2);
+            boolean isConfigured = cfgId != null && isModelCalc == 1;
 
             Map<String, BigDecimal> state = BucketMath.getInitialState(jdbc, coaNodeId, baseDate);
             if (state == null) continue;
@@ -222,22 +295,103 @@ public class NewBusinessEngine extends EngineBase {
             nd.state = state;
 
             if (isConfigured) {
-                nd.termRatios = loadTermRatios(jdbc, cfgId.longValue());
+                nd.termRatios = ratiosByCfg.getOrDefault(cfgId, new ArrayList<>());
+
+                // 增长配置 (未配 → 5 年参数全 0, 只滚桶不投放)
+                Map<String, Object> gc = growthByCfg.get(cfgId);
+                if (gc != null) {
+                    // ⚠️ growth_type 也是 tinyint(1) → Boolean, 用 intOf 兼容
+                    nd.growthType = intOf(gc.get("growth_type"), 1);
+                    for (int i = 0; i < 5; i++) {
+                        nd.yearValues[i] = BucketMath.toBD(gc.get("year" + (i + 1) + "_value"));
+                    }
+                    nd.unitScale = BucketMath.UNIT_SCALE_BY_UNIT.getOrDefault(
+                            String.valueOf(gc.getOrDefault("amount_unit", "WAN")), new BigDecimal("10000"));
+                }
+
+                // 节奏权重 (三重降级保护见 BucketMath.getRhythmWeights)
+                int rhythmType = intOf(row.get("rhythm_type"), 1);
+                nd.rhythmWeights = BucketMath.getRhythmWeights(rhythmType, rhythmByCfg.get(cfgId));
+            } else {
+                nd.rhythmWeights = BucketMath.defaultLinearWeights();
             }
+
+            // v2.4: 完整 60 月到期排期 —— 先装入基准日存量, 后续投放落点都会累加进来
+            BucketMath.accumulatePlan(nd.fullPlan, state, monthCount);
+
             result.add(nd);
         }
         return result;
     }
 
-    private List<Map<String, Object>> loadTermRatios(NamedParameterJdbcTemplate jdbc, Long cfgId) {
-        String sql = "SELECT term_value, term_unit, business_ratio, interest_rate, sort_order"
-                + "  FROM prcp_sim_term_ratio WHERE config_id=:cid AND is_deleted=0 ORDER BY sort_order";
-        return jdbc.queryForList(sql, new MapSqlParameterSource("cid", cfgId));
+    /** 批量查 prcp_sim_term_ratio (按 config_id IN) */
+    private Map<Long, List<Map<String, Object>>> loadTermRatiosBatch(
+            NamedParameterJdbcTemplate jdbc, List<Long> cfgIds) {
+        Map<Long, List<Map<String, Object>>> byCfg = new HashMap<>();
+        if (cfgIds.isEmpty()) return byCfg;
+        String sql = "SELECT config_id, term_value, term_unit, business_ratio, interest_rate, sort_order"
+                + "  FROM prcp_sim_term_ratio WHERE config_id IN (:cids) AND is_deleted=0"
+                + " ORDER BY config_id, sort_order";
+        List<Map<String, Object>> rows = jdbc.queryForList(sql,
+                new MapSqlParameterSource("cids", cfgIds));
+        for (Map<String, Object> r : rows) {
+            Long cid = ((Number) r.get("config_id")).longValue();
+            byCfg.computeIfAbsent(cid, k -> new ArrayList<>()).add(r);
+        }
+        return byCfg;
     }
 
+    /** 批量查 prcp_sim_growth_config (按 config_id IN) */
+    private Map<Long, Map<String, Object>> loadGrowthConfigBatch(
+            NamedParameterJdbcTemplate jdbc, List<Long> cfgIds) {
+        Map<Long, Map<String, Object>> byCfg = new HashMap<>();
+        if (cfgIds.isEmpty()) return byCfg;
+        String sql = "SELECT config_id, growth_type,"
+                + "       year1_value, year2_value, year3_value, year4_value, year5_value,"
+                + "       amount_unit"
+                + "  FROM prcp_sim_growth_config WHERE config_id IN (:cids) AND is_deleted=0";
+        List<Map<String, Object>> rows = jdbc.queryForList(sql,
+                new MapSqlParameterSource("cids", cfgIds));
+        for (Map<String, Object> r : rows) {
+            Long cid = ((Number) r.get("config_id")).longValue();
+            byCfg.put(cid, r);
+        }
+        return byCfg;
+    }
+
+    /** 批量查 prcp_sim_rhythm (按 config_id IN) */
+    private Map<Long, List<Map<String, Object>>> loadRhythmBatch(
+            NamedParameterJdbcTemplate jdbc, List<Long> cfgIds) {
+        Map<Long, List<Map<String, Object>>> byCfg = new HashMap<>();
+        if (cfgIds.isEmpty()) return byCfg;
+        String sql = "SELECT config_id, month_no, weight"
+                + "  FROM prcp_sim_rhythm WHERE config_id IN (:cids) AND is_deleted=0"
+                + " ORDER BY config_id, month_no";
+        List<Map<String, Object>> rows = jdbc.queryForList(sql,
+                new MapSqlParameterSource("cids", cfgIds));
+        for (Map<String, Object> r : rows) {
+            Long cid = ((Number) r.get("config_id")).longValue();
+            byCfg.computeIfAbsent(cid, k -> new ArrayList<>()).add(r);
+        }
+        return byCfg;
+    }
+
+    /**
+     * <p>步骤 4+5+6: v2.4 主循环 — 按月滚动 + 完整排期回填 + 统一批量 INSERT</p>
+     *
+     * <p><b>v2.4 相对 v1 的 3 处变更</b>:
+     * <ol>
+     *   <li>rem_* 改绝对到期月口径 (投放落 {@code rem_m{M+v}}, 到期取走 {@code rem_m{M}})</li>
+     *   <li>投放量改「固定年增量 × 节奏权重」, 余额改 {@code base + add}</li>
+     *   <li><b>延后 INSERT</b>: 循环内暂存 all_rows, 跑完后回填排期再批量入库 (500 行/批)</li>
+     * </ol>
+     * </p>
+     *
+     * @return 插入行数
+     */
     private int rollAndInsert(NamedParameterJdbcTemplate jdbc, Long runId, Long simSchemeId, String schemeCode,
                               Long coaSchemeId, LocalDate baseDate, int monthCount, List<NodeData> nodesData) {
-        // 构造 INSERT SQL：128 桶 + 18 元数据 + 4 主指标
+        // 构造 INSERT SQL：128 桶 + 18 元数据 + 4 主指标 + 7 追踪列 (v2.1/v2.3/v2.4)
         List<String> allCols = new ArrayList<>();
         allCols.add("sim_scheme_code");
         allCols.add("sim_scheme_id");
@@ -252,6 +406,15 @@ public class NewBusinessEngine extends EngineBase {
         allCols.add("category");
         allCols.add("is_configured");
         allCols.add("is_aggregated");
+        // v2.1: 投放分解追溯字段
+        allCols.add("growth_type");
+        allCols.add("year_target");
+        allCols.add("rhythm_weight");
+        allCols.add("month_add");
+        allCols.add("month_release");
+        // v2.3/v2.4: 计划到期 + 累计计划投放
+        allCols.add("planned_due");
+        allCols.add("cum_planned");
         for (String k : BucketMath.KEYS) {
             allCols.add("orig_" + k);
             allCols.add("rem_" + k);
@@ -262,41 +425,87 @@ public class NewBusinessEngine extends EngineBase {
         allCols.add("interest_amount");
         allCols.add("calc_note");
 
-        StringBuilder sql = new StringBuilder("INSERT INTO prcp_sim_result (");
-        sql.append(String.join(", ", allCols));
-        sql.append(") VALUES (");
-        for (int i = 0; i < allCols.size(); i++) {
-            if (i > 0) sql.append(", ");
-            sql.append(":").append(allCols.get(i));
-        }
-        sql.append(")");
-        String insertSql = sql.toString();
+        String insertSql = buildInsertSql(allCols);
 
-        int totalInserted = 0;
+        // v2.4: 延后 INSERT —— 循环内暂存 all_rows, 跑完后回填排期再批量入库
+        List<Map<String, Object>> allRows = new ArrayList<>();
+
         for (int k = 1; k <= monthCount; k++) {
             LocalDate dataDateK = BucketMath.addMonths(baseDate, k);
             String dataDateKStr = dataDateK.format(BucketMath.DF);
-            List<Map<String, Object>> rowsK = new ArrayList<>();
+
+            // v2.1: 第 k 月对应的年份索引 (1~5) 与年内月份 (1~12)
+            //       month_count 上限 60 → y 恒在 1~5 内, 不存在超出
+            int y = (k - 1) / 12 + 1;
+            int mInYear = (k - 1) % 12 + 1;
 
             for (NodeData nd : nodesData) {
                 Map<String, BigDecimal> state = nd.state;
-                Map<String, BigDecimal> monthNewMap = BucketMath.computeMonthNew(state, nd.growthRate);
-                BigDecimal netNew = monthNewMap.get("net_new");
-                BigDecimal monthNew = monthNewMap.get("month_new");
+                boolean isConfigured = nd.isConfigured;
+                BigDecimal baseBalance = state.getOrDefault("current_balance", BigDecimal.ZERO);
 
-                List<Map<String, BigDecimal>> additions = new ArrayList<>();
-                if (nd.isConfigured && !nd.termRatios.isEmpty()) {
-                    additions = BucketMath.applyTermSplit(state, monthNew, nd.termRatios);
+                // ===== 步骤 1: 年目标增量 =====
+                //  v2.1 修正 (type 4 余额锚定): 目标 = 配置的年末余额 − 年初余额。
+                //  年初余额每年锚定一次 (mInYear==1 时记录), 后续月份沿用,
+                //  否则余额逐月增长会让目标逐年递减, 导致年末余额偏离配置值。
+                BigDecimal yearTarget = BigDecimal.ZERO;
+                if (isConfigured) {
+                    BigDecimal yearParam = (y - 1 < nd.yearValues.length && nd.yearValues[y - 1] != null)
+                            ? nd.yearValues[y - 1] : BigDecimal.ZERO;
+                    if (nd.growthType == 4) {
+                        if (mInYear == 1) {
+                            nd.yearBaseBalance = baseBalance;
+                        }
+                        BigDecimal yearBase = nd.yearBaseBalance == null ? baseBalance : nd.yearBaseBalance;
+                        yearTarget = yearParam.multiply(nd.unitScale).subtract(yearBase);
+                    } else {
+                        yearTarget = BucketMath.computeYearTarget(
+                                nd.growthType, yearParam, baseBalance, nd.unitScale);
+                    }
                 }
 
-                nd.state = BucketMath.rollOneMonth(state);
-                Map<String, BigDecimal> main = BucketMath.computeMainMetrics(nd.state, nd.growthRate, additions, netNew, monthNew);
-                nd.state.put("current_balance", main.get("new_current_balance"));
-                nd.state.put("avg_balance",     main.get("new_avg_balance"));
-                nd.state.put("weighted_rate",   main.get("new_weighted_rate"));
-                nd.state.put("interest_amount", main.get("new_interest_amount"));
+                // ===== 步骤 2: 节奏权重 → 当月投放 =====
+                BigDecimal rhythmWeight = (mInYear <= nd.rhythmWeights.size())
+                        ? nd.rhythmWeights.get(mInYear - 1) : BigDecimal.ZERO;
 
-                Map<String, Object> row = new HashMap<>();
+                // v2.3: 在 take_due 清零「之前」先快照计划到期额
+                BigDecimal plannedDueK = BucketMath.peekDue(state, k);
+                BigDecimal release = BucketMath.takeDue(state, k);
+                Map<String, BigDecimal> mnMap = BucketMath.computeMonthNewV2(
+                        nd.growthType, yearTarget, rhythmWeight, release);
+                BigDecimal add = mnMap.get("add");
+                BigDecimal monthNew = mnMap.get("month_new");
+                nd.cumPlanned = nd.cumPlanned.add(monthNew);
+
+                // ===== 步骤 3: 按期限占比拆分 + 按绝对到期月落桶 =====
+                //  第 k 月投放期限 v 的业务 → 直接落到 rem_m{k+v}
+                //  v2.4: 同时把落点累加进该节点的「完整 60 月排期」
+                List<Map<String, BigDecimal>> additions = new ArrayList<>();
+                if (isConfigured && !nd.termRatios.isEmpty()) {
+                    additions = BucketMath.applyTermSplit(state, monthNew, nd.termRatios, k, nd.fullPlan);
+                }
+
+                // ===== 主表指标重算 =====
+                if (isConfigured) {
+                    Map<String, BigDecimal> main = BucketMath.computeMainMetrics(
+                            state, additions, add, monthNew);
+                    state.put("current_balance", main.get("new_current_balance"));
+                    state.put("avg_balance",     main.get("new_avg_balance"));
+                    state.put("weighted_rate",   main.get("new_weighted_rate"));
+                    state.put("interest_amount", main.get("new_interest_amount"));
+                } else {
+                    // 分支 A (存量保持): 余额与利率都不变
+                    BigDecimal avg = state.getOrDefault("avg_balance", BigDecimal.ZERO);
+                    BigDecimal wr = state.getOrDefault("weighted_rate", BigDecimal.ZERO);
+                    state.put("current_balance", baseBalance);
+                    state.put("avg_balance", avg);
+                    state.put("weighted_rate", wr);
+                    state.put("interest_amount",
+                            avg.multiply(wr).divide(BigDecimal.valueOf(12), 6, RoundingMode.HALF_UP));
+                }
+                nd.state = state;
+
+                Map<String, Object> row = new LinkedHashMap<>();
                 row.put("sim_scheme_code", schemeCode);
                 row.put("sim_scheme_id",   simSchemeId);
                 row.put("run_id",          runId);
@@ -308,28 +517,32 @@ public class NewBusinessEngine extends EngineBase {
                 row.put("node_name",       nd.nodeName);
                 row.put("node_level",      nd.nodeLevel);
                 row.put("category",        nd.category);
-                row.put("is_configured",   nd.isConfigured ? 1 : 0);
+                row.put("is_configured",   isConfigured ? 1 : 0);
                 row.put("is_aggregated",   0);
+                // v2.1: 投放分解追溯字段
+                row.put("growth_type",   isConfigured ? nd.growthType : null);
+                row.put("year_target",   isConfigured ? yearTarget : null);
+                row.put("rhythm_weight", isConfigured ? rhythmWeight : null);
+                row.put("month_add",     isConfigured ? add : null);
+                row.put("month_release", isConfigured ? release : null);
+                // v2.3/v2.4: 计划到期 + 累计计划投放
+                row.put("planned_due",  isConfigured ? plannedDueK : BigDecimal.ZERO);
+                row.put("cum_planned",  isConfigured ? nd.cumPlanned : BigDecimal.ZERO);
                 for (String kk : BucketMath.KEYS) {
-                    row.put("orig_" + kk, nd.state.getOrDefault("orig_" + kk, BigDecimal.ZERO));
-                    row.put("rem_"  + kk, nd.state.getOrDefault("rem_"  + kk, BigDecimal.ZERO));
+                    row.put("orig_" + kk, state.getOrDefault("orig_" + kk, BigDecimal.ZERO));
+                    row.put("rem_"  + kk, state.getOrDefault("rem_"  + kk, BigDecimal.ZERO));
                 }
-                row.put("current_balance", nd.state.get("current_balance"));
-                row.put("avg_balance",     nd.state.get("avg_balance"));
-                row.put("weighted_rate",   nd.state.get("weighted_rate"));
-                row.put("interest_amount", nd.state.get("interest_amount"));
-                row.put("calc_note", nd.isConfigured
-                        ? "M" + k + "=" + dataDateKStr + "; growth=" + nd.growthRate + "%; configured"
-                        : "M" + k + "=" + dataDateKStr + "; growth=0.0%; rolled-only");
-                rowsK.add(row);
-            }
-
-            if (!rowsK.isEmpty()) {
-                MapSqlParameterSource[] batch = rowsK.stream()
-                        .map(MapSqlParameterSource::new)
-                        .toArray(MapSqlParameterSource[]::new);
-                int[] counts = jdbc.batchUpdate(insertSql, batch);
-                totalInserted += counts.length;
+                row.put("current_balance", state.get("current_balance"));
+                row.put("avg_balance",     state.get("avg_balance"));
+                row.put("weighted_rate",   state.get("weighted_rate"));
+                row.put("interest_amount", state.get("interest_amount"));
+                row.put("calc_note", isConfigured
+                        ? "M" + k + "=" + dataDateKStr + "; y" + y + "m" + mInYear
+                          + "; gt=" + nd.growthType + "; w=" + rhythmWeight.setScale(4, RoundingMode.HALF_UP) + "%"
+                          + "; add=" + add.setScale(2, RoundingMode.HALF_UP)
+                          + "; rel=" + release.setScale(2, RoundingMode.HALF_UP)
+                        : "M" + k + "=" + dataDateKStr + "; rolled-only (is_model_calc=2)");
+                allRows.add(row);
             }
 
             // 更新进度
@@ -340,17 +553,93 @@ public class NewBusinessEngine extends EngineBase {
                             .addValue("pn", nodesData.size())
                             .addValue("id", runId));
         }
+
+        // ===== 步骤 5: v2.4 回填「完整 60 月到期排期」到每个节点的每一行 =====
+        //   这样任意一行 (含 M1) 都能看到「未来 5 年每个月都有到期」的完整时间轴。
+        Map<Long, Map<Integer, BigDecimal>> planByNode = new HashMap<>();
+        for (NodeData nd : nodesData) {
+            if (nd.isConfigured) planByNode.put(nd.coaNodeId, nd.fullPlan);
+        }
+        for (Map<String, Object> r : allRows) {
+            Object nidObj = r.get("coa_node_id");
+            if (nidObj == null) continue;
+            Map<Integer, BigDecimal> fp = planByNode.get(((Number) nidObj).longValue());
+            if (fp != null && !fp.isEmpty()) {
+                BucketMath.applyFinalPlan(r, fp);
+                r.put("calc_note", r.get("calc_note") + "; full_plan=" + fp.size() + "M");
+            }
+        }
+
+        // ===== 步骤 6: 统一批量 INSERT (500 行/批) =====
+        int totalInserted = 0;
+        final int BATCH = 500;
+        for (int i = 0; i < allRows.size(); i += BATCH) {
+            List<Map<String, Object>> chunk = allRows.subList(i, Math.min(i + BATCH, allRows.size()));
+            MapSqlParameterSource[] batch = chunk.stream()
+                    .map(MapSqlParameterSource::new)
+                    .toArray(MapSqlParameterSource[]::new);
+            int[] counts = jdbc.batchUpdate(insertSql, batch);
+            totalInserted += counts.length;
+        }
         return totalInserted;
     }
 
-    /** 聚合 SUMMARY 节点（递归 CTE） */
+    /** 构造 INSERT INTO prcp_sim_result 语句 */
+    private String buildInsertSql(List<String> allCols) {
+        StringBuilder sql = new StringBuilder("INSERT INTO prcp_sim_result (");
+        sql.append(String.join(", ", allCols));
+        sql.append(") VALUES (");
+        for (int i = 0; i < allCols.size(); i++) {
+            if (i > 0) sql.append(", ");
+            sql.append(":").append(allCols.get(i));
+        }
+        sql.append(")");
+        return sql.toString();
+    }
+
+    /**
+     * <p>Object → int (兼容 Boolean / Number / String)</p>
+     *
+     * <p>⚠️ MySQL 的 {@code tinyint(1)} 列会被 Connector/J 默认映射成 {@link Boolean}
+     * (见 {@code tinyInt1isBit=true}), 直接 {@code (Number) 强转} 会抛 ClassCastException。
+     * 本方法统一处理三种来源。</p>
+     *
+     * @param o          任意对象
+     * @param defaultVal 值为 null 时的默认值
+     * @return int 值
+     */
+    private static int intOf(Object o, int defaultVal) {
+        if (o == null) return defaultVal;
+        if (o instanceof Boolean) return ((Boolean) o) ? 1 : 0;
+        if (o instanceof Number) return ((Number) o).intValue();
+        try {
+            return new BigDecimal(o.toString().trim()).intValue();
+        } catch (Exception e) {
+            return defaultVal;
+        }
+    }
+
+    /**
+     * <p>聚合 SUMMARY 节点 (递归 CTE)</p>
+     *
+     * <p><b>v2.4 修正</b>:
+     * <ul>
+     *   <li>SUMMARY 节点筛选补 {@code OR EXISTS(child)} (与 Python 一致) ——
+     *       否则「有子节点但 node_type 不是 SUMMARY」的中间层不会被聚合</li>
+     *   <li>补 3 个聚合标量: {@code year_target} / {@code month_add} / {@code month_release}</li>
+     * </ul>
+     * </p>
+     */
     private int aggregateSummaryNodes(NamedParameterJdbcTemplate jdbc, Long runId, Long simSchemeId,
                                        String schemeCode, Long coaSchemeId, LocalDate baseDate, int monthCount) {
         String findSummarySql = "SELECT n.id, n.node_code, n.node_name, n.node_level,"
                 + "       (SELECT b.category FROM prcp_data_basic b"
                 + "         WHERE b.coa_node_id=n.id AND b.data_date=:bd AND b.is_deleted=0 LIMIT 1) AS category"
                 + "  FROM prcp_coa_node n"
-                + " WHERE n.scheme_id=:sid AND n.node_type='SUMMARY'"
+                + " WHERE n.scheme_id=:sid AND n.is_deleted=0"
+                + "   AND (n.node_type='SUMMARY'"
+                + "        OR EXISTS (SELECT 1 FROM prcp_coa_node ch"
+                + "                   WHERE ch.parent_id = n.id AND ch.is_deleted = 0))"
                 + " ORDER BY n.node_level DESC";
         List<Map<String, Object>> summaryNodes = jdbc.queryForList(findSummarySql,
                 new MapSqlParameterSource()
@@ -398,6 +687,9 @@ public class NewBusinessEngine extends EngineBase {
             String aggSql = "SELECT r.date_offset, SUM(r.current_balance) AS agg_current,"
                     + "       SUM(r.avg_balance) AS agg_avg, SUM(r.interest_amount) AS agg_interest,"
                     + "       SUM(r.current_balance * r.weighted_rate) AS sum_weighted,"
+                    + "       SUM(r.year_target) AS agg_year_target,"
+                    + "       SUM(r.month_add) AS agg_month_add,"
+                    + "       SUM(r.month_release) AS agg_month_release,"
                     + "       " + bucketSum
                     + "  FROM prcp_sim_result r"
                     + " WHERE r.run_id=:rid AND r.coa_node_id IN (" + placeholders + ")"
@@ -437,6 +729,15 @@ public class NewBusinessEngine extends EngineBase {
                 row.put("category",        snCat);
                 row.put("is_configured",   0);
                 row.put("is_aggregated",   1);
+                // v2.1: 汇总节点也带 3 个投放追溯标量
+                row.put("growth_type",   null);
+                row.put("year_target",   BucketMath.toBD(r.get("agg_year_target")));
+                row.put("rhythm_weight", null);
+                row.put("month_add",     BucketMath.toBD(r.get("agg_month_add")));
+                row.put("month_release", BucketMath.toBD(r.get("agg_month_release")));
+                // v2.3/v2.4: 汇总节点不参与排期, 置 0
+                row.put("planned_due",   BigDecimal.ZERO);
+                row.put("cum_planned",   BigDecimal.ZERO);
                 for (String k : BucketMath.KEYS) {
                     row.put("orig_" + k, BucketMath.toBD(r.get("orig_" + k)));
                     row.put("rem_"  + k, BucketMath.toBD(r.get("rem_"  + k)));
@@ -450,11 +751,13 @@ public class NewBusinessEngine extends EngineBase {
             }
 
             if (!rowsToInsert.isEmpty()) {
-                // 构造 INSERT SQL（重用 rollAndInsert 同款结构）
+                // 构造 INSERT SQL（结构与 rollAndInsert 一致, 含 7 追踪列）
                 List<String> cols = new ArrayList<>(Arrays.asList(
                     "sim_scheme_code","sim_scheme_id","run_id","data_date","date_offset",
                     "coa_scheme_id","coa_node_id","node_code","node_name","node_level","category",
-                    "is_configured","is_aggregated"));
+                    "is_configured","is_aggregated",
+                    "growth_type","year_target","rhythm_weight","month_add","month_release",
+                    "planned_due","cum_planned"));
                 for (String k : BucketMath.KEYS) {
                     cols.add("orig_" + k);
                     cols.add("rem_" + k);
@@ -572,7 +875,7 @@ public class NewBusinessEngine extends EngineBase {
      *
      * @param ctx     执行上下文
      * @param filters 过滤条件 + withBuckets 标志
-     * @return 结果行 Map 列表 (LIMIT 2000)
+     * @return 结果行 Map 列表 (LIMIT 20000, v2.4 从 2000 上调)
      */
     @Override
     public List<Map<String, Object>> listResults(EngineContext ctx, Map<String, Object> filters) {
@@ -627,7 +930,8 @@ public class NewBusinessEngine extends EngineBase {
         }
         sql.append(" FROM prcp_sim_result r");
         sql.append(where);
-        sql.append(" ORDER BY r.date_offset, r.coa_node_id LIMIT 2000");
+        // v2.4: LIMIT 2000 → 20000 (57 节点 × 60 月 = 3420 行, 原值会静默截断 40% 数据)
+        sql.append(" ORDER BY r.date_offset, r.coa_node_id LIMIT 20000");
 
         return jdbc.queryForList(sql.toString(), p);
     }

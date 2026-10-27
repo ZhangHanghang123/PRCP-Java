@@ -313,6 +313,8 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
                 seg.setMinValue(sm.get("min_value") == null ? null : new java.math.BigDecimal(sm.get("min_value").toString()));
                 seg.setMaxValue(sm.get("max_value") == null ? null : new java.math.BigDecimal(sm.get("max_value").toString()));
                 seg.setScore(new java.math.BigDecimal(sm.get("score").toString()));
+                // 🆕 v2.4 段内插值下界分 (NULL = 不启用插值, 退化为阶梯评分)
+                seg.setScoreMin(sm.get("score_min") == null ? null : new java.math.BigDecimal(sm.get("score_min").toString()));
                 seg.setSegmentDesc(sm.get("segment_desc") == null ? null : sm.get("segment_desc").toString());
                 seg.setIsDeleted(0);
                 kpiScoreSegmentMapper.insert(seg);
@@ -371,6 +373,32 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
      * @param resp 响应 Map (已含 value/higher_is_better/calc_method)
      * @return 填充完毕的 resp
      */
+    /**
+     * <p>PIECEWISE 区间段匹配 + <b>段内线性插值</b></p>
+     *
+     * <p><b>v2.4 段内插值</b> (对齐 Python routers/kpi.py:778-807):
+     * <pre>
+     *   score = score_min + (x − min_value) / (max_value − min_value) × (score − score_min)
+     * </pre>
+     *
+     * <p><b>四个条件同时满足才插值</b>, 否则退化为阶梯评分 (STEPPED):
+     * <ol>
+     *   <li>{@code score_min IS NOT NULL} — 未配下界分数 → 阶梯</li>
+     *   <li>{@code min_value IS NOT NULL} — 无下界 → 无区间宽度 → 阶梯</li>
+     *   <li>{@code max_value IS NOT NULL} — 无上界 → 无区间宽度 → 阶梯</li>
+     *   <li>{@code max_value > min_value} — 零宽段 (峰点) → 阶梯</li>
+     * </ol>
+     * </p>
+     *
+     * <p>区间匹配为闭区间 {@code [min, max]}, 取第一个命中段;
+     * 未命中时 score=null + matched=false。</p>
+     *
+     * @param segs 段列表 (按 seg_order 升序)
+     * @param value 指标值
+     * @param rule 规则
+     * @param resp 响应 Map (已含 value/higher_is_better/calc_method)
+     * @return 填充完毕的 resp, matched_range 含 score_min/score_max/interpolate_mode
+     */
     private Map<String, Object> scoreCalcPiecewise(List<KpiScoreSegment> segs, BigDecimal value,
                                                    KpiScoreRule rule, Map<String, Object> resp) {
         KpiScoreSegment matched = null;
@@ -386,12 +414,39 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
             resp.put("message", "所有区间均不匹配，请检查规则配置");
             return resp;
         }
+
+        BigDecimal scoreMax = matched.getScore();
+        BigDecimal scoreMin = matched.getScoreMin();
+        BigDecimal minV = matched.getMinValue();
+        BigDecimal maxV = matched.getMaxValue();
+
+        // 段内插值: 四条件判定
+        boolean canInterpolate = scoreMin != null && minV != null && maxV != null
+                && maxV.compareTo(minV) > 0;
+        BigDecimal finalScore;
+        String interpolateMode;
+        if (canInterpolate) {
+            BigDecimal ratio = value.subtract(minV)
+                    .divide(maxV.subtract(minV), 8, java.math.RoundingMode.HALF_UP);
+            finalScore = scoreMin.add(ratio.multiply(scoreMax.subtract(scoreMin)))
+                    .setScale(2, java.math.RoundingMode.HALF_UP);
+            interpolateMode = "INTERPOLATED";
+        } else {
+            finalScore = scoreMax;
+            interpolateMode = "STEPPED";
+        }
+
         Map<String, Object> matchedRange = new LinkedHashMap<>();
-        matchedRange.put("min_value", matched.getMinValue());
-        matchedRange.put("max_value", matched.getMaxValue());
+        matchedRange.put("segment_id", matched.getId());
+        matchedRange.put("seg_order", matched.getSegOrder());
+        matchedRange.put("min_value", minV);
+        matchedRange.put("max_value", maxV);
+        matchedRange.put("score_min", scoreMin);
+        matchedRange.put("score_max", scoreMax);
+        matchedRange.put("interpolate_mode", interpolateMode);
         matchedRange.put("segment_desc", matched.getSegmentDesc());
         resp.put("matched", true);
-        resp.put("score", matched.getScore());
+        resp.put("score", finalScore);
         resp.put("matched_range", matchedRange);
         return resp;
     }
@@ -519,6 +574,8 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
                 sm.put("min_value", s.getMinValue());
                 sm.put("max_value", s.getMaxValue());
                 sm.put("score", s.getScore());
+                // 🆕 v2.4 段内插值下界分 (NULL = 阶梯评分)
+                sm.put("score_min", s.getScoreMin());
                 sm.put("segment_desc", s.getSegmentDesc());
                 segList.add(sm);
             }
@@ -553,6 +610,7 @@ public class KpiService extends ServiceImpl<KpiMapper, KpiDefinition> {
                         if (sm.containsKey("seg_order"))    sm.put("segOrder",    sm.get("seg_order"));
                         if (sm.containsKey("min_value"))    sm.put("minValue",    sm.get("min_value"));
                         if (sm.containsKey("max_value"))    sm.put("maxValue",    sm.get("max_value"));
+                        if (sm.containsKey("score_min"))    sm.put("scoreMin",    sm.get("score_min"));
                         if (sm.containsKey("segment_desc")) sm.put("segmentDesc", sm.get("segment_desc"));
                         segsWithAlias.add(sm);
                     }

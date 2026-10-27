@@ -78,8 +78,9 @@ public class SimController {
      * @return R.ok(节点树)
      */
     @GetMapping("/coa-tree")
-    public R<Map<String, Object>> coaTree(@RequestParam("coa_scheme_id") Long coaSchemeId) {
-        return simService.coaTree(coaSchemeId);
+    public R<Map<String, Object>> coaTree(@RequestParam("coa_scheme_id") Long coaSchemeId,
+                                          @RequestParam(name = "sim_scheme_id", required = false) Long simSchemeId) {
+        return simService.coaTree(coaSchemeId, simSchemeId);
     }
 
     // ============ 3. node-info（节点基础信息 + 当前余额） ============
@@ -300,7 +301,107 @@ public class SimController {
      */
     @GetMapping("/tree")
     public R<Map<String, Object>> simTree(@RequestParam("scheme_id") Long coaSchemeId) {
-        return simService.coaTree(coaSchemeId);
+        return simService.coaTree(coaSchemeId, null);
+    }
+
+    // ============ 12b. v2.1: 12 个月节奏配置 (prcp_sim_rhythm) ============
+    /**
+     * <p>取 12 个月节奏权重 (无数据 → 默认线性 8.3333%)</p>
+     *
+     * <pre>
+     * GET /sim/rhythm/{cfgId}
+     * Response: R.ok({config_id, weights:[{month_no, month_label, weight, remark}], total})
+     * </pre>
+     *
+     * @param cfgId 节点配置 ID
+     * @return R.ok(节奏权重)
+     */
+    @GetMapping("/rhythm/{cfgId}")
+    public R<Map<String, Object>> getRhythm(@PathVariable("cfgId") Long cfgId) {
+        return simService.getRhythm(cfgId);
+    }
+
+    /**
+     * <p>保存 12 个月节奏权重 (整段替换, 必须满 12 个月且和为 100%)</p>
+     *
+     * <pre>
+     * PUT /sim/rhythm/{cfgId}
+     * Body: {weights: [{month_no, weight, remark}, ...]}
+     * </pre>
+     *
+     * @param cfgId 节点配置 ID
+     * @param body  权重列表
+     * @return R.ok({ok, config_id, count, total})
+     */
+    @PutMapping("/rhythm/{cfgId}")
+    public R<Map<String, Object>> saveRhythm(@PathVariable("cfgId") Long cfgId,
+                                              @RequestBody Map<String, Object> body) {
+        return simService.saveRhythm(cfgId, body);
+    }
+
+    /**
+     * <p>重置 12 个月节奏为线性 (每月 8.3333%)</p>
+     *
+     * <pre>
+     * POST /sim/rhythm/{cfgId}/reset-linear
+     * </pre>
+     *
+     * @param cfgId 节点配置 ID
+     * @return R.ok({ok, config_id, count, total})
+     */
+    @PostMapping("/rhythm/{cfgId}/reset-linear")
+    public R<Map<String, Object>> resetRhythmLinear(@PathVariable("cfgId") Long cfgId) {
+        return simService.resetRhythmLinear(cfgId);
+    }
+
+    // ============ 12c. v2.1: 新业务增长配置 (prcp_sim_growth_config) ============
+    /**
+     * <p>取增长配置 (增长方式 + 5 年参数)</p>
+     *
+     * <pre>
+     * GET /sim/growth/{cfgId}
+     * Response: R.ok({exists, growth_type, year1_value..year5_value, unit, amount_unit, remark})
+     * </pre>
+     *
+     * @param cfgId 节点配置 ID
+     * @return R.ok(增长配置)
+     */
+    @GetMapping("/growth/{cfgId}")
+    public R<Map<String, Object>> getGrowth(@PathVariable("cfgId") Long cfgId) {
+        return simService.getGrowth(cfgId);
+    }
+
+    /**
+     * <p>保存增长配置 (UPSERT)</p>
+     *
+     * <pre>
+     * PUT /sim/growth/{cfgId}
+     * Body: {growth_type, year1_value..year5_value, amount_unit, remark}
+     * </pre>
+     *
+     * @param cfgId 节点配置 ID
+     * @param body  增长配置
+     * @return R.ok({ok, config_id, growth_id, growth_type})
+     */
+    @PutMapping("/growth/{cfgId}")
+    public R<Map<String, Object>> saveGrowth(@PathVariable("cfgId") Long cfgId,
+                                              @RequestBody Map<String, Object> body) {
+        return simService.saveGrowth(cfgId, body);
+    }
+
+    /**
+     * <p>删除增长配置 (软删)</p>
+     *
+     * <pre>
+     * DELETE /sim/growth/{cfgId}
+     * </pre>
+     *
+     * @param cfgId 节点配置 ID
+     * @return R.ok({ok, config_id, deleted})
+     */
+    @DeleteMapping("/growth/{cfgId}")
+    public R<Map<String, Object>> deleteGrowth(@PathVariable("cfgId") Long cfgId) {
+        return simService.deleteGrowth(cfgId);
     }
 
     // ============ 13. /sim/schemes/{id}/nodes/{nid}（节点配置详情） ============

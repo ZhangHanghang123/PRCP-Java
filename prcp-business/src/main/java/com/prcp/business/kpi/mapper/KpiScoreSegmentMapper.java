@@ -32,7 +32,7 @@ public interface KpiScoreSegmentMapper extends BaseMapper<KpiScoreSegment> {
      * @return KpiScoreSegment 实体列表
      */
     @Select({
-        "SELECT id, rule_id, seg_order, min_value, max_value, score, segment_desc, "
+        "SELECT id, rule_id, seg_order, min_value, max_value, score, score_min, segment_desc, "
         + " is_deleted, created_at, updated_at "
         + " FROM prcp_kpi_score_segment "
         + " WHERE rule_id = #{ruleId} AND is_deleted = 0 "

@@ -6,7 +6,9 @@ import com.prcp.business.coa.service.CoaSchemeService;
 import com.prcp.business.sim.entity.SimNodeConfig;
 import com.prcp.business.sim.entity.SimScheme;
 import com.prcp.business.sim.entity.SimTermRatio;
+import com.prcp.business.sim.mapper.SimGrowthConfigMapper;
 import com.prcp.business.sim.mapper.SimNodeConfigMapper;
+import com.prcp.business.sim.mapper.SimRhythmMapper;
 import com.prcp.business.sim.mapper.SimSchemeMapper;
 import com.prcp.business.sim.mapper.SimTermRatioMapper;
 import com.prcp.common.exception.BizException;
@@ -56,6 +58,10 @@ public class SimService {
     private final SimSchemeMapper schemeMapper;
     private final SimNodeConfigMapper nodeConfigMapper;
     private final SimTermRatioMapper termRatioMapper;
+    /** 🆕 v2.1: 12 个月投放节奏权重 */
+    private final SimRhythmMapper rhythmMapper;
+    /** 🆕 v2.1: 新业务增长配置 (增长方式 + 5 年参数) */
+    private final SimGrowthConfigMapper growthConfigMapper;
     private final CoaSchemeService coaSchemeService;
     private final CoaNodeService coaNodeService;
 
@@ -91,61 +97,85 @@ public class SimService {
      * @param coaSchemeId 账户册方案 ID (必填)
      * @return R.ok(Map.of("scheme_id"/"items"/"total", ...))
      */
-    public R<Map<String, Object>> coaTree(Long coaSchemeId) {
+    /**
+     * <p>账户册节点树 (含「已配置」标记)</p>
+     *
+     * <p><b>v2.4 修正</b>: 新增 {@code sim_scheme_id} 参数 ——
+     * 传了则每个节点带 {@code has_config} 标记 (该节点在该方案下是否已有配置),
+     * 前端据此把「已配置」的末级节点标绿 (对齐 Python routers/sim.py coa_tree)。</p>
+     *
+     * @param coaSchemeId 账户册方案 ID
+     * @param simSchemeId 模拟方案 ID (可选, 用于标记已配置)
+     * @return R.ok({scheme_id, items, total})
+     */
+    public R<Map<String, Object>> coaTree(Long coaSchemeId, Long simSchemeId) {
         if (coaSchemeId == null) throw BizException.badRequest("coa_scheme_id 必填");
-        List<Map<String, Object>> rows = coaNodeService.listTree(coaSchemeId).getData();
-        // 后端组装嵌套树（与 Python routers/sim.py coa_tree 一致）
-        Map<String, Map<String, Object>> byPath = new LinkedHashMap<>();
-        for (Map<String, Object> r : rows) {
-            String path = (String) r.get("path");
-            Map<String, Object> node = new LinkedHashMap<>();
-            node.put("key", String.valueOf(r.get("id")));
-            node.put("title", r.get("nodeName") + " (" + r.get("nodeCode") + ")");
-            node.put("code", r.get("nodeCode"));
-            node.put("name", r.get("nodeName"));
-            node.put("id", r.get("id"));
-            node.put("level", r.get("nodeLevel"));
-            node.put("type", r.get("nodeType"));
-            node.put("path", path);
-            node.put("sort_order", r.get("sortOrder"));
-            node.put("status", r.get("status"));
-            node.put("isLeaf", false);
-            node.put("children", new ArrayList<>());
-            byPath.put(path, node);
+
+        // 🆕 v2.4 修正: coaNodeService.listTree() 返回的已经是**嵌套树** (3 个根 + children),
+        //   旧代码把它当扁平列表再按 path 组装一次 → 子节点全丢, 树只剩 3 个顶层节点。
+        //   现在直接复用嵌套结构, 只做字段改名 + has_config 标记。
+        List<Map<String, Object>> roots = coaNodeService.listTree(coaSchemeId).getData();
+
+        // 已配置节点集合 (该 sim 方案下存在未删除的 node_config)
+        Set<Long> configured = new HashSet<>();
+        if (simSchemeId != null) {
+            List<Long> ids = nodeConfigMapper.listConfiguredNodeIds(simSchemeId);
+            if (ids != null) configured.addAll(ids);
         }
-        List<Map<String, Object>> roots = new ArrayList<>();
-        for (Map<String, Object> node : byPath.values()) {
-            String path = (String) node.get("path");
-            int lastSlash = path.length() > 1 ? path.substring(0, path.length() - 1).lastIndexOf("/") + 1 : 0;
-            String parentPath = path.substring(0, lastSlash);
-            Map<String, Object> parent = byPath.get(parentPath);
-            if (parent != null) {
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> pc = (List<Map<String, Object>>) parent.get("children");
-                pc.add(node);
-            } else {
-                roots.add(node);
-            }
+
+        // 递归改造节点结构 (字段改名 + has_config + isLeaf)
+        int[] total = {0};
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Map<String, Object> r : roots) {
+            items.add(mapTreeNode(r, configured, total));
         }
-        // 标记叶子
-        markLeaves(roots);
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("scheme_id", coaSchemeId);
-        resp.put("items", roots);
-        resp.put("total", byPath.size());
+        resp.put("items", items);
+        resp.put("total", total[0]);
         return R.ok(resp);
     }
 
-    private void markLeaves(List<Map<String, Object>> nodes) {
-        for (Map<String, Object> n : nodes) {
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> children = (List<Map<String, Object>>) n.get("children");
-            if (children == null || children.isEmpty()) {
-                n.put("isLeaf", true);
-            } else {
-                markLeaves(children);
+    /**
+     * <p>递归改造账户册树节点 (字段改名 + has_config + isLeaf)</p>
+     *
+     * <p>源结构来自 {@code CoaNodeService.listTree()}: 字段是 camelCase 的
+     * {@code nodeCode/nodeName/nodeLevel/nodeType/sortOrder}, 子节点在 {@code children} 里。</p>
+     *
+     * @param src        源节点
+     * @param configured 已配置的节点 ID 集合
+     * @param total      计数器 (统计总节点数)
+     * @return 改造后的节点 (字段名对齐 Python routers/sim.py coa_tree)
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> mapTreeNode(Map<String, Object> src, Set<Long> configured, int[] total) {
+        total[0]++;
+        Object idObj = src.get("id");
+        Long id = idObj == null ? null : ((Number) idObj).longValue();
+
+        Map<String, Object> node = new LinkedHashMap<>();
+        node.put("key", String.valueOf(idObj));
+        node.put("title", src.get("nodeName") + " (" + src.get("nodeCode") + ")");
+        node.put("code", src.get("nodeCode"));
+        node.put("name", src.get("nodeName"));
+        node.put("id", idObj);
+        node.put("level", src.get("nodeLevel"));
+        node.put("type", src.get("nodeType"));
+        node.put("path", src.get("path"));
+        node.put("sort_order", src.get("sortOrder"));
+        node.put("status", src.get("status"));
+        node.put("has_config", id != null && configured.contains(id));
+
+        List<Map<String, Object>> srcChildren = (List<Map<String, Object>>) src.get("children");
+        List<Map<String, Object>> children = new ArrayList<>();
+        if (srcChildren != null) {
+            for (Map<String, Object> c : srcChildren) {
+                children.add(mapTreeNode(c, configured, total));
             }
         }
+        node.put("children", children);
+        node.put("isLeaf", children.isEmpty());
+        return node;
     }
 
     /**
@@ -303,6 +333,17 @@ public class SimService {
      * @param coaNodeId 节点 ID (必填)
      * @return R.ok(Map.of("exists"/"config"/"ratios"/"scheme_data_date", ...))
      */
+    /**
+     * <p>取节点配置 (含期限占比 + 12 月节奏 + 增长配置)</p>
+     *
+     * <p><b>v2.4 修正</b>: 响应结构对齐 Python routers/sim.py get_node_config ——
+     * 新增 {@code rhythm[]} (12 月权重) 和 {@code growth{}} (增长方式 + 5 年参数),
+     * 且 {@code config} 里带 {@code is_model_calc} / {@code rhythm_type}。</p>
+     *
+     * @param schemeId  方案 ID
+     * @param coaNodeId 节点 ID
+     * @return R.ok({exists, config, ratios, rhythm, growth, scheme_data_date})
+     */
     public R<Map<String, Object>> getNodeConfig(Long schemeId, Long coaNodeId) {
         if (schemeId == null) throw BizException.badRequest("scheme_id 必填");
         if (coaNodeId == null) throw BizException.badRequest("coa_node_id 必填");
@@ -314,17 +355,96 @@ public class SimService {
             resp.put("exists", false);
             resp.put("config", null);
             resp.put("ratios", Collections.emptyList());
+            resp.put("rhythm", defaultRhythm());
+            resp.put("growth", defaultGrowth());
             resp.put("scheme_data_date", schemeDataDate);
             return R.ok(resp);
         }
         Long cfgId = ((Number) cfg.get("id")).longValue();
         List<Map<String, Object>> ratios = termRatioMapper.listByConfigId(cfgId);
+
+        // 节奏配置 (12 个月权重), 无数据 → 默认线性
+        List<Map<String, Object>> rhythm = rhythmMapper.listByConfigId(cfgId);
+        if (rhythm == null || rhythm.isEmpty()) rhythm = defaultRhythm();
+
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("exists", true);
         resp.put("config", cfg);
         resp.put("ratios", ratios);
+        resp.put("rhythm", rhythm);
+        resp.put("growth", readGrowth(cfgId));
         resp.put("scheme_data_date", schemeDataDate);
         return R.ok(resp);
+    }
+
+    /** 默认线性节奏 (12 个月均匀 100/12 = 8.3333%) */
+    private List<Map<String, Object>> defaultRhythm() {
+        List<Map<String, Object>> list = new ArrayList<>();
+        BigDecimal w = new BigDecimal("100").divide(new BigDecimal("12"), 4, java.math.RoundingMode.HALF_UP);
+        for (int m = 1; m <= 12; m++) {
+            Map<String, Object> r = new LinkedHashMap<>();
+            r.put("month_no", m);
+            r.put("month_label", m + "月");
+            r.put("weight", w);
+            r.put("remark", "默认线性（12 个月均匀）");
+            list.add(r);
+        }
+        return list;
+    }
+
+    /** 读增长配置 (无数据 → 默认: 目标增长百分比 + 5 年全 0) */
+    private Map<String, Object> readGrowth(Long cfgId) {
+        Map<String, Object> g = growthConfigMapper.findByConfigId(cfgId);
+        Map<String, Object> resp = new LinkedHashMap<>();
+        if (g == null) {
+            resp.put("exists", false);
+            resp.put("growth_type", 1);
+            resp.put("year1_value", BigDecimal.ZERO);
+            resp.put("year2_value", BigDecimal.ZERO);
+            resp.put("year3_value", BigDecimal.ZERO);
+            resp.put("year4_value", BigDecimal.ZERO);
+            resp.put("year5_value", BigDecimal.ZERO);
+            resp.put("unit", "%");
+            resp.put("amount_unit", null);
+            resp.put("remark", null);
+            return resp;
+        }
+        resp.put("exists", true);
+        resp.put("id", g.get("id"));
+        resp.put("growth_type", intOf(g.get("growthType"), 1));
+        resp.put("year1_value", g.get("year1Value"));
+        resp.put("year2_value", g.get("year2Value"));
+        resp.put("year3_value", g.get("year3Value"));
+        resp.put("year4_value", g.get("year4Value"));
+        resp.put("year5_value", g.get("year5Value"));
+        resp.put("unit", g.getOrDefault("unit", "%"));
+        resp.put("amount_unit", g.get("amountUnit"));
+        resp.put("remark", g.get("remark"));
+        return resp;
+    }
+
+    /** 默认增长配置 */
+    private Map<String, Object> defaultGrowth() {
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("exists", false);
+        resp.put("growth_type", 1);
+        for (int i = 1; i <= 5; i++) resp.put("year" + i + "_value", BigDecimal.ZERO);
+        resp.put("unit", "%");
+        resp.put("amount_unit", null);
+        resp.put("remark", null);
+        return resp;
+    }
+
+    /** Object → int (兼容 Boolean / Number / String, tinyint(1) 会被驱动映射成 Boolean) */
+    private static int intOf(Object o, int defaultVal) {
+        if (o == null) return defaultVal;
+        if (o instanceof Boolean) return ((Boolean) o) ? 1 : 0;
+        if (o instanceof Number) return ((Number) o).intValue();
+        try {
+            return new BigDecimal(o.toString().trim()).intValue();
+        } catch (Exception e) {
+            return defaultVal;
+        }
     }
 
     /**
@@ -346,6 +466,9 @@ public class SimService {
             ? BigDecimal.ZERO : new BigDecimal(body.get("annual_growth_rate").toString());
         String termUnit = body.get("term_unit") == null ? "MONTH" : body.get("term_unit").toString();
         String remark = body.get("remark") == null ? null : body.get("remark").toString();
+        // 🆕 v2.1: 是否模型测算 (1=是 2=否) + 节奏配置类型 (1=线性 2=自定义)
+        int isModelCalc = intOf(body.get("is_model_calc"), 2);
+        int rhythmType = intOf(body.get("rhythm_type"), 1);
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> ratios = (List<Map<String, Object>>) body.get("ratios");
@@ -377,6 +500,8 @@ public class SimService {
             upd.setId(cfgId);
             upd.setAnnualGrowthRate(annualGrowth);
             upd.setTermUnit(termUnit);
+            upd.setIsModelCalc(isModelCalc);
+            upd.setRhythmType(rhythmType);
             upd.setRemark(remark);
             upd.setUpdatedBy(uid());
             upd.setUpdatedAt(java.time.LocalDateTime.now());
@@ -392,6 +517,8 @@ public class SimService {
             ins.setAnnualGrowthRate(annualGrowth);
             ins.setTermUnit(termUnit);
             ins.setTermCount(0);
+            ins.setIsModelCalc(isModelCalc);
+            ins.setRhythmType(rhythmType);
             ins.setRemark(remark);
             ins.setIsDeleted(0);
             ins.setCreatedBy(uid());
@@ -440,6 +567,210 @@ public class SimService {
         resp.put("config_id", cfgId);
         resp.put("term_count", ratios.size());
         resp.put("total_ratio", total.setScale(4, java.math.RoundingMode.HALF_UP));
+        return R.ok(resp);
+    }
+
+    // ========================================================================
+    // v2.1: 12 个月节奏配置 (prcp_sim_rhythm)
+    // ========================================================================
+
+    /**
+     * <p>取 12 个月节奏权重 (无数据 → 默认线性 8.3333%)</p>
+     *
+     * @param cfgId 节点配置 ID
+     * @return R.ok({config_id, weights:[{month_no, month_label, weight, remark}], total})
+     */
+    public R<Map<String, Object>> getRhythm(Long cfgId) {
+        if (cfgId == null) throw BizException.badRequest("cfg_id 必填");
+        List<Map<String, Object>> rows = rhythmMapper.listByConfigId(cfgId);
+        if (rows == null || rows.isEmpty()) rows = defaultRhythm();
+        BigDecimal total = BigDecimal.ZERO;
+        for (Map<String, Object> r : rows) {
+            Object w = r.get("weight");
+            if (w != null) total = total.add(new BigDecimal(w.toString()));
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("config_id", cfgId);
+        resp.put("weights", rows);
+        resp.put("total", total.setScale(4, java.math.RoundingMode.HALF_UP));
+        return R.ok(resp);
+    }
+
+    /**
+     * <p>保存 12 个月节奏权重 (整段替换)</p>
+     *
+     * <p>校验: 必须恰好 12 个月 (1~12 不重复), 权重和偏差 ≤ 0.1%</p>
+     *
+     * @param cfgId 节点配置 ID
+     * @param body  {weights:[{month_no, weight, remark}]}
+     * @return R.ok({ok, config_id, count, total})
+     */
+    @Transactional
+    public R<Map<String, Object>> saveRhythm(Long cfgId, Map<String, Object> body) {
+        if (cfgId == null) throw BizException.badRequest("cfg_id 必填");
+        if (body == null) throw BizException.badRequest("请求体不能为空");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> weights = (List<Map<String, Object>>) body.get("weights");
+        if (weights == null || weights.isEmpty())
+            throw BizException.badRequest("weights 不能为空");
+
+        Set<Integer> months = new TreeSet<>();
+        BigDecimal total = BigDecimal.ZERO;
+        for (Map<String, Object> w : weights) {
+            int m = intOf(w.get("month_no"), 0);
+            if (m < 1 || m > 12) throw BizException.badRequest("month_no 必须 1~12");
+            months.add(m);
+            Object v = w.get("weight");
+            if (v != null) total = total.add(new BigDecimal(v.toString()));
+        }
+        if (months.size() != 12)
+            throw BizException.badRequest("必须配置满 12 个月, 当前 " + months.size() + " 个月");
+        if (total.subtract(new BigDecimal("100")).abs().compareTo(new BigDecimal("0.1")) > 0)
+            throw BizException.badRequest("12 个月权重之和必须为 100% (±0.1%), 当前 = "
+                    + total.setScale(4, java.math.RoundingMode.HALF_UP) + "%");
+
+        // 取所属 scheme / node 信息
+        SimNodeConfig cfg = nodeConfigMapper.selectById(cfgId);
+        if (cfg == null) throw BizException.notFound("节点配置不存在");
+
+        rhythmMapper.softDeleteByConfigId(cfgId);
+        for (Map<String, Object> w : weights) {
+            int m = intOf(w.get("month_no"), 1);
+            BigDecimal weight = w.get("weight") == null ? BigDecimal.ZERO
+                    : new BigDecimal(w.get("weight").toString());
+            String remark = w.get("remark") == null ? null : w.get("remark").toString();
+            // ⚠️ 唯一键 uk_config_month = (config_id, month_no) 不含 is_deleted
+            //   → 必须「软删复活优先」, 否则 Duplicate entry
+            Map<String, Object> ex = rhythmMapper.findByConfigAndMonth(cfgId, m);
+            if (ex != null) {
+                rhythmMapper.reviveById(((Number) ex.get("id")).longValue(), m, m + "月", weight, remark, uid());
+            } else {
+                rhythmMapper.insertOne(cfgId, cfg.getSchemeId(), cfg.getCoaNodeId(),
+                        m, m + "月", weight, remark, uid());
+            }
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("ok", true);
+        resp.put("config_id", cfgId);
+        resp.put("count", weights.size());
+        resp.put("total", total.setScale(4, java.math.RoundingMode.HALF_UP));
+        return R.ok(resp);
+    }
+
+    /**
+     * <p>重置 12 个月节奏为线性 (每��� 100/12 = 8.3333%)</p>
+     *
+     * @param cfgId 节点配置 ID
+     * @return R.ok({ok, config_id, count, total})
+     */
+    @Transactional
+    public R<Map<String, Object>> resetRhythmLinear(Long cfgId) {
+        if (cfgId == null) throw BizException.badRequest("cfg_id 必填");
+        SimNodeConfig cfg = nodeConfigMapper.selectById(cfgId);
+        if (cfg == null) throw BizException.notFound("节点配置不存在");
+        rhythmMapper.softDeleteByConfigId(cfgId);
+        BigDecimal w = new BigDecimal("100").divide(new BigDecimal("12"), 4, java.math.RoundingMode.HALF_UP);
+        for (int m = 1; m <= 12; m++) {
+            // ⚠️ 唯一键 uk_config_month 不含 is_deleted → 复活优先
+            Map<String, Object> ex = rhythmMapper.findByConfigAndMonth(cfgId, m);
+            if (ex != null) {
+                rhythmMapper.reviveById(((Number) ex.get("id")).longValue(), m, m + "月", w, "12 月线性分配", uid());
+            } else {
+                rhythmMapper.insertOne(cfgId, cfg.getSchemeId(), cfg.getCoaNodeId(),
+                        m, m + "月", w, "12 月线性分配", uid());
+            }
+        }
+        // 对齐 Python: 重置线性时同步把 rhythm_type 改成 1
+        nodeConfigMapper.updateRhythmType(cfgId, 1, uid());
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("ok", true);
+        resp.put("config_id", cfgId);
+        resp.put("count", 12);
+        resp.put("total", new BigDecimal("100"));
+        // 返回重置后的权重列表 (前端可直接刷新表格, 不用再查一次)
+        resp.put("weights", rhythmMapper.listByConfigId(cfgId));
+        return R.ok(resp);
+    }
+
+    // ========================================================================
+    // v2.1: 新业务增长配置 (prcp_sim_growth_config)
+    // ========================================================================
+
+    /**
+     * <p>取增长配置 (无数据 → 默认: 目标增长百分比 + 5 年全 0)</p>
+     *
+     * @param cfgId 节点配置 ID
+     * @return R.ok(growth Map)
+     */
+    public R<Map<String, Object>> getGrowth(Long cfgId) {
+        if (cfgId == null) throw BizException.badRequest("cfg_id 必填");
+        return R.ok(readGrowth(cfgId));
+    }
+
+    /**
+     * <p>保存增长配置 (UPSERT: 有则更新, 无则新增)</p>
+     *
+     * @param cfgId 节点配置 ID
+     * @param body  {growth_type, year1_value..year5_value, amount_unit, remark}
+     * @return R.ok({ok, config_id, growth_id, growth_type})
+     */
+    @Transactional
+    public R<Map<String, Object>> saveGrowth(Long cfgId, Map<String, Object> body) {
+        if (cfgId == null) throw BizException.badRequest("cfg_id 必填");
+        if (body == null) throw BizException.badRequest("请求体不能为空");
+        int growthType = intOf(body.get("growth_type"), 1);
+        if (growthType < 1 || growthType > 4)
+            throw BizException.badRequest("growth_type 必须 1~4");
+        BigDecimal[] y = new BigDecimal[5];
+        for (int i = 0; i < 5; i++) {
+            Object v = body.get("year" + (i + 1) + "_value");
+            y[i] = v == null ? BigDecimal.ZERO : new BigDecimal(v.toString());
+        }
+        String unit = body.get("unit") == null ? "%" : body.get("unit").toString();
+        String amountUnit = body.get("amount_unit") == null ? null : body.get("amount_unit").toString();
+        String remark = body.get("remark") == null ? null : body.get("remark").toString();
+
+        SimNodeConfig cfg = nodeConfigMapper.selectById(cfgId);
+        if (cfg == null) throw BizException.notFound("节点配置不存在");
+
+        Map<String, Object> existing = growthConfigMapper.findIncludingDeleted(cfgId);
+        Long growthId;
+        if (existing != null) {
+            growthId = ((Number) existing.get("id")).longValue();
+            growthConfigMapper.updateOne(growthId, growthType, y[0], y[1], y[2], y[3], y[4],
+                    unit, amountUnit, remark, uid());
+        } else {
+            SimScheme scheme = schemeMapper.selectById(cfg.getSchemeId());
+            growthConfigMapper.insertOne(cfgId, cfg.getSchemeId(),
+                    scheme == null ? null : scheme.getSchemeCode(),
+                    scheme == null ? null : scheme.getSchemeName(),
+                    cfg.getCoaNodeId(), cfg.getCoaNodeCode(), null,
+                    growthType, y[0], y[1], y[2], y[3], y[4], unit, amountUnit, remark, uid());
+            Map<String, Object> after = growthConfigMapper.findByConfigId(cfgId);
+            growthId = after == null ? null : ((Number) after.get("id")).longValue();
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("ok", true);
+        resp.put("config_id", cfgId);
+        resp.put("growth_id", growthId);
+        resp.put("growth_type", growthType);
+        return R.ok(resp);
+    }
+
+    /**
+     * <p>删除增长配置 (软删)</p>
+     *
+     * @param cfgId 节点配置 ID
+     * @return R.ok({ok, config_id})
+     */
+    @Transactional
+    public R<Map<String, Object>> deleteGrowth(Long cfgId) {
+        if (cfgId == null) throw BizException.badRequest("cfg_id 必填");
+        int n = growthConfigMapper.softDeleteByConfigId(cfgId, uid());
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("ok", true);
+        resp.put("config_id", cfgId);
+        resp.put("deleted", n);
         return R.ok(resp);
     }
 

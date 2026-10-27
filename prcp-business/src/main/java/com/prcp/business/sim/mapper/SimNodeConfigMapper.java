@@ -40,7 +40,10 @@ public interface SimNodeConfigMapper extends BaseMapper<SimNodeConfig> {
     @Select({
         "SELECT id, scheme_id AS schemeId, coa_node_id AS coaNodeId, coa_node_code AS coaNodeCode,",
         "       annual_growth_rate AS annualGrowthRate, term_unit AS termUnit,",
-        "       term_count AS termCount, remark",
+        "       term_count AS termCount, remark,",
+        // ⚠️ tinyint(1) 会被 Connector/J 映射成 Boolean, 用 CAST 强制转 int
+        "       CAST(is_model_calc AS SIGNED) AS isModelCalc,",
+        "       CAST(rhythm_type AS SIGNED) AS rhythmType",
         "  FROM prcp_sim_node_config",
         " WHERE scheme_id = #{schemeId} AND coa_node_id = #{coaNodeId} AND is_deleted = 0",
         " LIMIT 1"
@@ -89,11 +92,34 @@ public interface SimNodeConfigMapper extends BaseMapper<SimNodeConfig> {
         "SELECT c.id, c.scheme_id AS schemeId, c.coa_node_id AS coaNodeId,",
         "       n.node_code AS coaNodeCode, n.node_name AS coaNodeName,",
         "       c.annual_growth_rate AS annualGrowthRate, c.term_unit AS termUnit,",
-        "       c.term_count AS termCount, c.remark",
+        "       c.term_count AS termCount, c.remark,",
+        "       CAST(c.is_model_calc AS SIGNED) AS isModelCalc,",
+        "       CAST(c.rhythm_type AS SIGNED) AS rhythmType",
         "  FROM prcp_sim_node_config c",
         "  LEFT JOIN prcp_coa_node n ON n.id = c.coa_node_id",
         " WHERE c.scheme_id = #{schemeId} AND c.is_deleted = 0",
         " ORDER BY c.id ASC"
     })
     List<Map<String, Object>> listByScheme(@Param("schemeId") Long schemeId);
+
+    /**
+     * <p>列出某方案下已配置的 coa_node_id 集合 (用于账户册树「已配置」标绿)</p>
+     *
+     * @param schemeId 方案 ID
+     * @return 已配置的 coa_node_id 列表
+     */
+    @Select("SELECT coa_node_id FROM prcp_sim_node_config WHERE scheme_id = #{schemeId} AND is_deleted = 0")
+    List<Long> listConfiguredNodeIds(@Param("schemeId") Long schemeId);
+
+    /**
+     * <p>更新节奏配置类型 (1=线性 2=自定义) — 对齐 Python reset_rhythm_linear 同步 rhythm_type=1</p>
+     *
+     * @param id         节点配置 ID
+     * @param rhythmType 节奏类型
+     * @param uid        操作人
+     * @return 受影响行数
+     */
+    @Update("UPDATE prcp_sim_node_config SET rhythm_type = #{rhythmType}, updated_by = #{uid}, updated_at = NOW() WHERE id = #{id}")
+    int updateRhythmType(@Param("id") Long id, @Param("rhythmType") int rhythmType,
+                          @Param("uid") Long uid);
 }

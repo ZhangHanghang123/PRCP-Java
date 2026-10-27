@@ -646,6 +646,7 @@ CREATE TABLE `prcp_kpi_score_segment` (
   `min_value` decimal(20,6) DEFAULT NULL,
   `max_value` decimal(20,6) DEFAULT NULL,
   `score` decimal(8,2) NOT NULL,
+  `score_min` decimal(8,2) DEFAULT NULL COMMENT '最小值分数（下界 min_value 处的得分），NULL 表示不启用段内插值',
   `segment_desc` varchar(255) DEFAULT NULL,
   `is_deleted` tinyint(1) DEFAULT '0',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,

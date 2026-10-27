@@ -24,6 +24,8 @@ public class KpiScoreSegment {
     private BigDecimal minValue;
     private BigDecimal maxValue;
     private BigDecimal score;
+    /** 🆕 最小值分数 (下界 min_value 处的得分), NULL = 不启用段内插值 (阶梯评分) */
+    private BigDecimal scoreMin;
     private String segmentDesc;
     private Integer isDeleted;
     private LocalDateTime createdAt;
