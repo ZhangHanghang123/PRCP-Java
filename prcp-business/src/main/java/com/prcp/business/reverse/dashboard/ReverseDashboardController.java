@@ -111,4 +111,30 @@ public class ReverseDashboardController {
                                            @RequestParam(value = "date_offset", required = false) Integer dateOffset) {
         return svc.snapshot(schemeCode, runId, dateOffset);
     }
+
+    // ============ balance-trend（末级账户册余额走势）============
+    /**
+     * <p>末级账户册余额走势 — 按月返回大类汇总 + 节点明细</p>
+     *
+     * <pre>
+     * GET /reverse-dashboard/balance-trend?scheme_code=&run_id=
+     *
+     * Response: R.ok({
+     *   scheme_code, run_id,
+     *   months:      [{offset, date}],
+     *   categories:  [{key, values}],
+     *   nodes:       [{code, name, category, values, total}]
+     * })
+     * </pre>
+     *
+     * @param schemeCode 方案编码 (可选, 默认 "2026")
+     * @param runId      运行 ID (可选, 缺省取最新 SUCCESS)
+     * @return R.ok(余额走势)
+     */
+    @GetMapping("/balance-trend")
+    public R<Map<String, Object>> balanceTrend(
+            @RequestParam(value = "scheme_code", required = false) String schemeCode,
+            @RequestParam(value = "run_id", required = false) Long runId) {
+        return svc.balanceTrend(schemeCode, runId);
+    }
 }
