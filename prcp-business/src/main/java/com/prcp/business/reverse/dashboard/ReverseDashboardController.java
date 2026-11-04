@@ -7,6 +7,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import javax.servlet.http.HttpServletResponse;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 /**
@@ -33,6 +37,7 @@ import java.util.Map;
 public class ReverseDashboardController {
 
     private final ReverseDashboardService svc;
+    private final ReverseDashboardExportService exportSvc;
 
     /**
      * <p>下拉选项 (方案/算法 列表)</p>
@@ -136,5 +141,43 @@ public class ReverseDashboardController {
             @RequestParam(value = "scheme_code", required = false) String schemeCode,
             @RequestParam(value = "run_id", required = false) Long runId) {
         return svc.balanceTrend(schemeCode, runId);
+    }
+
+    // ============ balance-export（结果导出 xlsx）============
+    /**
+     * <p>结果导出 — 按账户册导出测算期每月预测余额 (xlsx)</p>
+     *
+     * <pre>
+     * GET /reverse-dashboard/balance-export?scheme_code=&run_id=
+     *
+     * Response: 二进制流 (xlsx)，含 4 个 Sheet:
+     *   1. 账户册结构       — 树形，末级=自身值，父节点=子树 roll-up
+     *   2. 按层级汇总       — 大类 × 层级 + 末级合计行
+     *   3. 末级节点大类汇总 — 5 大类逐月合计 + 合计行
+     *   4. 口径说明         — 方案/Run/基准日/月份区间/余额口径等
+     * 文件名: 组合反算结果导出_{scheme_code}_run{run_id}_{起始月}至{结束月}.xlsx
+     * </pre>
+     *
+     * @param schemeCode 方案编码 (可选, 缺省取首个方案)
+     * @param runId      运行 ID (可选, 缺省取最新 SUCCESS)
+     * @param resp       HTTP 响应对象
+     * @throws Exception 导出异常
+     */
+    @GetMapping("/balance-export")
+    public void balanceExport(@RequestParam(value = "scheme_code", required = false) String schemeCode,
+                               @RequestParam(value = "run_id", required = false) Long runId,
+                               HttpServletResponse resp) throws Exception {
+        // 先取数据再设响应头: 数据准备阶段的异常 (方案不存在 / 无 Run / 无月度数据)
+        // 才能以正常 JSON 错误响应返回, 而不是被已设置的 xlsx Content-Type 吞掉
+        byte[] data = exportSvc.exportBalanceXlsx(schemeCode, runId);
+        String fname = "组合反算结果导出_" + (schemeCode == null ? "" : schemeCode)
+                + (runId == null ? "" : "_run" + runId) + ".xlsx";
+        String enc = URLEncoder.encode(fname, StandardCharsets.UTF_8).replace("+", "%20");
+        resp.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        resp.setHeader("Content-Disposition",
+                "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
+        resp.setContentLength(data.length);
+        resp.getOutputStream().write(data);
+        resp.getOutputStream().flush();
     }
 }

@@ -1175,9 +1175,21 @@ public class ReverseDashboardService {
      * <p>仅算叶子节点（节点 N 是 leaf ⇔ 没有其他节点 M 使得 M.path 以 N.path + "/" 开头）
      * 对齐 Python _is_leaf；避免父子重复计算（如 S010100000000 父节点 + S010101/S010102/S010103 子节点）
      */
-    private static boolean isLeaf(String nodeCode, String path, Set<String> parentSet) {
+    /**
+     * <p>末级节点判定 (path 前缀推断) — 供 ExportService 复用</p>
+     *
+     * @param nodeCode  节点编码
+     * @param path      节点 path
+     * @param parentSet 有子节点的节点集合
+     * @return 是否末级
+     */
+    public static boolean isLeafByPath(String nodeCode, String path, Set<String> parentSet) {
         if (path == null || path.isEmpty()) return true;
         return !parentSet.contains(nodeCode);
+    }
+
+    private static boolean isLeaf(String nodeCode, String path, Set<String> parentSet) {
+        return isLeafByPath(nodeCode, path, parentSet);
     }
 
     /**
@@ -1218,7 +1230,14 @@ public class ReverseDashboardService {
         return sum.setScale(2, RoundingMode.HALF_UP);
     }
 
-    private static String classify(String nodeCode, String path) {
+    /**
+     * <p>节点大类归类 — 供 ExportService 复用</p>
+     *
+     * @param nodeCode 节点编码
+     * @param path     节点 path
+     * @return ASSET / LIABILITY / EQUITY / OFF_BALANCE / OTHER
+     */
+    public static String classify(String nodeCode, String path) {
         String code = nodeCode == null ? "" : nodeCode;
         String p = path == null ? "" : path;
         // 1) 顶层 node_code 前缀识别（S01=资产 / S02=负债 / S03=权益）
