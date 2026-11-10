@@ -453,9 +453,11 @@ public class ReverseDashboardService {
         }
 
         // 8. 24 月趋势
+        // 只取 date_offset >= 1: offset=0 是基准日(与 offset=1 同为 data_date),
+        // 若一并取会导致趋势图 X 轴出现两个相同的 YYMMDD 标签 (如 251201 重复两次)
         List<Map<String, Object>> monthRows = jdbc.queryForList(
                 "SELECT date_offset, data_date FROM prcp_data_reverse"
-              + " WHERE scheme_code = ? AND run_id = ? AND offset_unit = 'M' AND is_deleted = 0"
+              + " WHERE scheme_code = ? AND run_id = ? AND offset_unit = 'M' AND date_offset >= 1 AND is_deleted = 0"
               + " GROUP BY date_offset, data_date ORDER BY date_offset ASC",
                 schemeCode, runId);
         List<Map<String, Object>> monthDates = new ArrayList<>();
