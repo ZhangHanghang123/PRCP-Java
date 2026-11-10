@@ -229,14 +229,8 @@ public class ReverseDashboardService {
         Long revId = ((Number) rev.get("revId")).longValue();
         Long coaSchemeId = rev.get("coaSchemeId") == null ? null : ((Number) rev.get("coaSchemeId")).longValue();
 
-        // 2. Run（缺省取最新 SUCCESS）
-        if (runId == null) {
-            List<Map<String, Object>> lr = jdbc.queryForList(
-                    "SELECT id FROM prcp_reverse_run WHERE scheme_id = ? AND status = 'SUCCESS' AND is_deleted = 0"
-                  + " ORDER BY id DESC LIMIT 1", revId);
-            if (lr.isEmpty()) throw BizException.notFound("该方案无 SUCCESS 运行记录");
-            runId = ((Number) lr.get(0).get("id")).longValue();
-        }
+        // 2. Run（缺省自动选取, 含 data_reverse 关联断裂回退）
+        runId = resolveRunId(revId, schemeCode, runId);
 
         // 3. 当前月份 data_date
         List<Map<String, Object>> ddRows = jdbc.queryForList(
@@ -248,17 +242,20 @@ public class ReverseDashboardService {
         Object dataDate = ddRows.get(0).get("dataDate");
         String dataDateStr = dataDate == null ? null : dataDate.toString();
 
-        // 4. 节点元数据
-        List<Map<String, Object>> nodes = new ArrayList<>();
-        if (coaSchemeId != null) {
-            nodes = jdbc.queryForList(
-                    "SELECT id, node_code, node_name, node_level, path"
-                  + " FROM prcp_coa_node WHERE scheme_id = ? AND is_deleted = 0"
-                  + " ORDER BY path, node_level", coaSchemeId);
-            // 改回 Python key 名（snake_case 一致）
-            for (Map<String, Object> n : nodes) {
-                n.put("coa_node_id", n.get("id"));
-            }
+        // 4. 节点元数据 —— 覆盖【所有 COA 账户册方案】的节点
+        //  (不再限定当前反算方案关联的 coa_scheme_id: 多套账户册并存时, Top 10 节点
+        //   与节点矩阵需跨方案统一排名; 且方案若未正确关联 COA 也不会导致整页空白)
+        List<Map<String, Object>> nodes = jdbc.queryForList(
+                "SELECT n.id, n.node_code, n.node_name, n.node_level, n.path,"
+              + "       n.scheme_id AS coa_scheme_id, c.scheme_code AS coa_scheme_code,"
+              + "       c.scheme_name AS coa_scheme_name"
+              + "  FROM prcp_coa_node n"
+              + "  LEFT JOIN prcp_coa_scheme c ON c.id = n.scheme_id"
+              + " WHERE n.is_deleted = 0"
+              + " ORDER BY n.scheme_id, n.path, n.node_level");
+        // 改回 Python key 名（snake_case 一致）
+        for (Map<String, Object> n : nodes) {
+            n.put("coa_node_id", n.get("id"));
         }
 
         // 4a. 基础数据（基准日余额 + is_leaf 末级标记）
@@ -611,6 +608,9 @@ public class ReverseDashboardService {
                 nm.put("node_name", n.get("node_name"));
                 nm.put("node_level", n.get("node_level"));
                 nm.put("category", cat);
+                nm.put("coa_scheme_id", n.get("coa_scheme_id"));
+                nm.put("coa_scheme_code", n.get("coa_scheme_code"));
+                nm.put("coa_scheme_name", n.get("coa_scheme_name"));
                 nm.put("is_leaf", isLeafFlag(nc, (String) n.get("path"), parentSet, basicMap));
                 nm.put("current_balance", rd.getOrDefault("current_balance", BigDecimal.ZERO));
                 nm.put("base_balance", bs.getOrDefault("base_balance", BigDecimal.ZERO));
@@ -730,6 +730,47 @@ public class ReverseDashboardService {
         return R.ok(Collections.emptyMap());
     }
 
+
+    /**
+     * <p>解析运行 ID (缺省自动选取)</p>
+     *
+     * <p><b>为什么要回退</b>: {@code prcp_reverse_run.id} 与 {@code prcp_data_reverse.run_id}
+     * 在历史数据里存在<b>关联断裂</b> —— 引擎执行时写入的 run_id 与事后登记的 run 记录 id 不一致。
+     * 例: REV_DNN_REG 方案 prcp_reverse_run 最新 SUCCESS 是 run 12,
+     * 但 prcp_data_reverse 里的数据实际挂在 run 8 上。若只取「最新 SUCCESS」,
+     * 后续按 (scheme_code, run_id) 查月度数据会一条都查不到 → 整个快照报「未找到 M1」→ 页面全空。</p>
+     *
+     * <p>策略: 先用最新 SUCCESS run; 若该 run 在 prcp_data_reverse 里没有数据,
+     * 回退到该 scheme_code 下实际存在数据的最大 run_id。</p>
+     *
+     * @param revId      反算方案 ID
+     * @param schemeCode 方案编码
+     * @param runId      显式指定的 run (非空则直接使用, 不做回退)
+     * @return 有效的 run_id
+     */
+    private Long resolveRunId(Long revId, String schemeCode, Long runId) {
+        if (runId != null) return runId;
+        List<Map<String, Object>> lr = jdbc.queryForList(
+                "SELECT id FROM prcp_reverse_run WHERE scheme_id = ? AND status = 'SUCCESS' AND is_deleted = 0"
+              + " ORDER BY id DESC LIMIT 1", revId);
+        if (!lr.isEmpty()) {
+            Long candidate = ((Number) lr.get(0).get("id")).longValue();
+            Integer cnt = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM prcp_data_reverse"
+                  + " WHERE scheme_code = ? AND run_id = ? AND is_deleted = 0",
+                    Integer.class, schemeCode, candidate);
+            if (cnt != null && cnt > 0) return candidate;
+        }
+        // 回退: 该方案下实际有数据的最大 run_id
+        List<Map<String, Object>> fr = jdbc.queryForList(
+                "SELECT MAX(run_id) AS rid FROM prcp_data_reverse"
+              + " WHERE scheme_code = ? AND is_deleted = 0", schemeCode);
+        if (!fr.isEmpty() && fr.get(0).get("rid") != null) {
+            return ((Number) fr.get(0).get("rid")).longValue();
+        }
+        throw BizException.notFound("该方案无 SUCCESS 运行记录");
+    }
+
     // ============== 辅助 ==============
     /**
      * <p>末级账户册余额走势 — 对位 Python reverse_dashboard.py:584-681 balance-trend</p>
@@ -757,24 +798,17 @@ public class ReverseDashboardService {
         Long coaSchemeId = rev.get("coaSchemeId") == null ? null
                 : ((Number) rev.get("coaSchemeId")).longValue();
 
-        // 2. Run（缺省取最新 SUCCESS）
-        if (runId == null) {
-            List<Map<String, Object>> lr = jdbc.queryForList(
-                    "SELECT id FROM prcp_reverse_run WHERE scheme_id = ? AND status = 'SUCCESS' AND is_deleted = 0"
-                  + " ORDER BY id DESC LIMIT 1", revId);
-            if (lr.isEmpty()) throw BizException.notFound("该方案无 SUCCESS 运行记录");
-            runId = ((Number) lr.get(0).get("id")).longValue();
-        }
+        // 2. Run（缺省自动选取, 含 data_reverse 关联断裂回退）
+        runId = resolveRunId(revId, schemeCode, runId);
 
-        // 3. 节点元数据 + 末级标记
-        List<Map<String, Object>> nodes = new ArrayList<>();
-        if (coaSchemeId != null) {
-            nodes = jdbc.queryForList(
-                    "SELECT id, node_code, node_name, node_level, path"
-                  + " FROM prcp_coa_node WHERE scheme_id = ? AND is_deleted = 0 ORDER BY path, node_level",
-                    coaSchemeId);
-            for (Map<String, Object> n : nodes) n.put("coa_node_id", n.get("id"));
-        }
+        // 3. 节点元数据 + 末级标记（覆盖所有 COA 账户册方案）
+        List<Map<String, Object>> nodes = jdbc.queryForList(
+                "SELECT n.id, n.node_code, n.node_name, n.node_level, n.path,"
+              + "       n.scheme_id AS coa_scheme_id, c.scheme_code AS coa_scheme_code"
+              + "  FROM prcp_coa_node n"
+              + "  LEFT JOIN prcp_coa_scheme c ON c.id = n.scheme_id"
+              + " WHERE n.is_deleted = 0 ORDER BY n.scheme_id, n.path, n.node_level");
+        for (Map<String, Object> n : nodes) n.put("coa_node_id", n.get("id"));
         Set<String> parentSet = computeParentSet(nodes);
 
         // 4. 逐月数据
@@ -851,6 +885,7 @@ public class ReverseDashboardService {
             meta.put("code", nc);
             meta.put("name", n.get("node_name"));
             meta.put("category", cat);
+            meta.put("coa_scheme_code", n.get("coa_scheme_code"));
             meta.put("total", total.setScale(2, RoundingMode.HALF_UP));
             nodeMeta.put(nc, meta);
         }
