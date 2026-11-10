@@ -210,7 +210,7 @@ public class ReverseDashboardService {
      * @param schemeCode 反算方案编码 (默认 "2026")
      * @param runId      Run ID (可选, 默认最新 SUCCESS)
      * @param dateOffset 日期偏移月数 (默认 1)
-     * @return R.ok(Map); 包含 kpi/trend/category_distribution/node_matrix/top_nodes/risk_alerts/kpi_scores
+     * @return R.ok(Map); 包含 kpi/trend/category_distribution/node_matrix/top_nodes(末级节点余额排行)/risk_alerts/kpi_scores
      */
     public R<Map<String, Object>> snapshot(String schemeCode, Long runId, Integer dateOffset) {
         if (schemeCode == null || schemeCode.isEmpty()) schemeCode = "2026";
@@ -625,14 +625,18 @@ public class ReverseDashboardService {
                 nodeMatrix.add(nm);
             }
 
-            // 11. Top 10
-            List<Map<String, Object>> topNodes = new ArrayList<>(nodeMatrix);
+            // 11. 末级节点余额排行 (全部末级节点, 按 |当前余额| 降序)
+            //  口径: 只取末级节点 (is_leaf), 避免父子节点重复计入同一笔余额;
+            //        覆盖全部账户册方案 (COA), 不做 Top N 截断。
+            List<Map<String, Object>> topNodes = new ArrayList<>();
+            for (Map<String, Object> nm : nodeMatrix) {
+                if (Boolean.TRUE.equals(nm.get("is_leaf"))) topNodes.add(nm);
+            }
             topNodes.sort((a, b) -> {
                 BigDecimal ab = (BigDecimal) a.get("current_balance");
                 BigDecimal bb = (BigDecimal) b.get("current_balance");
                 return bb.abs().compareTo(ab.abs());
             });
-            if (topNodes.size() > 10) topNodes = topNodes.subList(0, 10);
 
             // 12. 风险预警
             List<Map<String, Object>> alerts = new ArrayList<>();
