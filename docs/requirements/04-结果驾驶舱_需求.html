@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>测算结果驾驶舱 — 需求规格说明书</title>
+<style>
+  :root{
+    --brand:#1F4E9C; --brand-l:#EAF1FB; --brand-d:#12356B;
+    --text:#1F2733; --text-2:#5A6673; --text-3:#8A94A2;
+    --line:#E3E8EF; --line-2:#EFF2F6;
+    --bg:#F7F9FC; --card:#FFFFFF;
+    --ok:#0F7B3D; --ok-bg:#E8F6EE;
+    --warn:#A65A00; --warn-bg:#FFF4E3;
+    --bad:#B42318; --bad-bg:#FDECEA;
+    --info:#0B6FF2; --info-bg:#EAF2FE;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    background:var(--bg); color:var(--text); line-height:1.7; font-size:14px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:0 28px 80px}
+
+  /* ── 页头 ── */
+  header.doc{
+    background:linear-gradient(135deg,var(--brand) 0%,#2E6BC4 60%,#3E7FD8 100%);
+    color:#fff;padding:44px 0 38px;margin-bottom:0;
+  }
+  header.doc .wrap{padding-bottom:0}
+  .eyebrow{font-size:12px;letter-spacing:.14em;opacity:.82;text-transform:uppercase;margin-bottom:10px}
+  header.doc h1{font-size:27px;font-weight:600;letter-spacing:-.01em;margin-bottom:12px}
+  .lede{font-size:14px;color:#E4EDFA;max-width:860px;line-height:1.85}
+  .meta-row{display:flex;flex-wrap:wrap;gap:10px 26px;margin-top:22px;font-size:12.5px;color:#D3E1F7}
+  .meta-row b{font-weight:500;color:#9FC0EC;margin-right:6px}
+
+  /* ── 目录 ── */
+  nav.toc{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px 24px;margin:26px 0 34px}
+  nav.toc h2{font-size:13px;color:var(--text-3);font-weight:500;letter-spacing:.06em;margin-bottom:12px;text-transform:uppercase}
+  nav.toc ol{list-style:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:7px 22px;counter-reset:t}
+  nav.toc li{counter-increment:t;font-size:13px}
+  nav.toc li::before{content:counter(t) ".";color:var(--brand);font-weight:600;margin-right:7px;font-variant-numeric:tabular-nums}
+  nav.toc a{color:var(--text-2);text-decoration:none;border-bottom:1px solid transparent}
+  nav.toc a:hover{color:var(--brand);border-bottom-color:var(--brand)}
+
+  /* ── 章节 ── */
+  section{margin-bottom:38px}
+  h2.sec{font-size:20px;font-weight:600;color:var(--brand-d);padding-bottom:11px;border-bottom:2px solid var(--brand-l);margin-bottom:20px;display:flex;align-items:baseline;gap:11px}
+  h2.sec .num{font-size:13px;color:#fff;background:var(--brand);border-radius:5px;padding:2px 9px;font-weight:500;flex:none}
+  h3{font-size:15.5px;font-weight:600;color:var(--text);margin:26px 0 12px;padding-left:11px;border-left:3px solid var(--brand)}
+  h4{font-size:14px;font-weight:600;color:var(--text-2);margin:18px 0 9px}
+  p{margin-bottom:12px;color:var(--text-2)}
+  p strong,li strong{color:var(--text);font-weight:600}
+  ul,ol{margin:0 0 14px 22px;color:var(--text-2)}
+  li{margin-bottom:6px}
+
+  /* ── 卡片 ── */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px 22px;margin-bottom:18px}
+  .card>.grid-note{font-size:12.5px;color:var(--text-3);margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)}
+
+  /* ── 表格 ── */
+  table{width:100%;border-collapse:collapse;margin:12px 0 16px;font-size:13px;background:var(--card);
+        border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  caption{caption-side:top;text-align:left;font-size:12.5px;color:var(--text-3);padding:0 0 8px}
+  th{background:#F2F6FB;color:var(--brand-d);font-weight:600;text-align:left;padding:9px 12px;
+     border-bottom:1px solid var(--line);white-space:nowrap;font-size:12.5px}
+  td{padding:8px 12px;border-bottom:1px solid var(--line-2);color:var(--text-2);vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#FAFCFF}
+  td code,th code,p code,li code{font-family:var(--mono);font-size:12px;background:#F1F4F9;color:#0B4FA8;
+                                 padding:1px 5px;border-radius:3px;white-space:nowrap}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .w-narrow{width:1%;white-space:nowrap}
+
+  /* ── 标签 ── */
+  .tag{display:inline-block;font-size:11px;line-height:1.6;padding:1px 7px;border-radius:4px;font-weight:500;white-space:nowrap}
+  .t-req{background:var(--bad-bg);color:var(--bad)}
+  .t-opt{background:#F1F3F6;color:var(--text-3)}
+  .t-get{background:var(--info-bg);color:var(--info)}
+  .t-calc{background:var(--warn-bg);color:var(--warn)}
+  .t-ok{background:var(--ok-bg);color:var(--ok)}
+  .t-new{background:#F3E8FF;color:#6B21A8}
+
+  /* ── 提示块 ── */
+  .note{border-radius:8px;padding:13px 16px;margin:14px 0;font-size:13px;border:1px solid;line-height:1.75}
+  .note .nt{font-weight:600;display:block;margin-bottom:5px;font-size:13px}
+  .note p{margin:0;color:inherit}
+  .note.info{background:var(--info-bg);border-color:#C5DCFB}
+  .note.info .nt{color:var(--info)}
+  .note.warn{background:var(--warn-bg);border-color:#F5D9A8}
+  .note.warn .nt{color:var(--warn)}
+  .note.bad{background:var(--bad-bg);border-color:#F5C6C0}
+  .note.bad .nt{color:var(--bad)}
+  .note.ok{background:var(--ok-bg);border-color:#BFE3CE}
+  .note.ok .nt{color:var(--ok)}
+  .note ul{margin:6px 0 0 18px}
+  .note li{margin-bottom:3px}
+
+  /* ── 公式 ── */
+  .formula{background:#F8FAFD;border:1px solid var(--line);border-left:3px solid var(--brand);
+           border-radius:6px;padding:12px 16px;margin:12px 0;font-family:var(--mono);font-size:12.5px;
+           color:#1B2C4A;overflow-x:auto;line-height:1.85}
+  .formula .cm{color:var(--text-3)}
+
+  /* ── 区块结构图 ── */
+  .layout{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:22px;margin:16px 0}
+  .blk{border:1px solid var(--line);border-radius:8px;padding:13px 16px;margin-bottom:11px;background:#FCFDFF}
+  .blk:last-child{margin-bottom:0}
+  .blk-h{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:7px}
+  .blk-h .t{font-size:13.5px;font-weight:600;color:var(--text)}
+  .blk-h .d{font-size:12px;color:var(--text-3)}
+  .blk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:8px}
+  .chip{background:#F2F6FB;border:1px solid #E1E9F5;border-radius:6px;padding:7px 10px;font-size:12px;color:var(--brand-d)}
+  .chip span{display:block;color:var(--text-3);font-size:10.5px;margin-top:2px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+  @media(max-width:820px){.row2{grid-template-columns:1fr}}
+  .half{border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:#FCFDFF}
+  .half .hh{font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px}
+
+  /* ── 筛选条 ── */
+  .filters{display:flex;flex-wrap:wrap;gap:11px;margin:14px 0}
+  .fitem{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:11px 15px;flex:1 1 190px;min-width:180px}
+  .fitem .fl{font-size:11.5px;color:var(--text-3);margin-bottom:5px}
+  .fitem .fv{font-size:13.5px;color:var(--text);font-weight:500;font-family:var(--mono)}
+  .fitem .fd{font-size:11.5px;color:var(--text-3);margin-top:5px;line-height:1.6}
+
+  /* ── 流程 ── */
+  .flow{display:flex;align-items:stretch;flex-wrap:wrap;gap:0;margin:16px 0}
+  .fstep{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 15px;flex:1 1 150px;position:relative;margin:4px}
+  .fstep .fn{font-size:10.5px;color:var(--brand);font-weight:600;letter-spacing:.05em}
+  .fstep .ft{font-size:13px;font-weight:600;color:var(--text);margin:3px 0 5px}
+  .fstep .fd{font-size:11.5px;color:var(--text-3);line-height:1.6}
+
+  /* ── 风险表 ── */
+  .risk td:first-child{font-weight:600;color:var(--text);width:44px;text-align:center}
+  .lvl{font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;white-space:nowrap}
+  .lv1{background:var(--bad-bg);color:var(--bad)}
+  .lv2{background:var(--warn-bg);color:var(--warn)}
+  .lv3{background:#F1F3F6;color:var(--text-3)}
+
+  footer.doc{border-top:1px solid var(--line);margin-top:44px;padding-top:22px;color:var(--text-3);font-size:12.5px}
+  .kbd{font-family:var(--mono);font-size:11.5px;background:#EEF2F7;border:1px solid #DCE3EC;border-bottom-width:2px;
+       border-radius:4px;padding:1px 5px;color:#3D4B5C}
+  /* 页头内嵌代码标签需反色, 否则深蓝字压在蓝底上看不清 */
+  header.doc code{background:rgba(255,255,255,.16);color:#FFFFFF;border:1px solid rgba(255,255,255,.24)}
+  header.doc .lede strong{color:#FFFFFF}
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="wrap">
+    <div class="eyebrow">PRCP · 组合反算平台 / 需求规格说明书</div>
+    <h1>测算结果驾驶舱 — 需求规格说明书</h1>
+    <p class="lede">
+      本文档描述「测算方案 → 测算结果」页签下的结果驾驶舱（<code>DashboardPanels</code>）的功能规格，
+      覆盖页面展示内容、区块结构、查询条件与联动关系、数据来源与计算口径、导出能力，以及当前实现中已识别的口径差异与风险点。
+      所有内容依据前后端源码与生产库实测数据整理，可作为验收依据与后续迭代基线。
+    </p>
+    <div class="meta-row">
+      <span><b>文档版本</b>v1.0</span>
+      <span><b>编制日期</b>2026-11-10</span>
+      <span><b>所属模块</b>PRCP-Java / 组合反算（Reverse）</span>
+      <span><b>线上地址</b>https://wxfzhh.online/prcp-java/reverse</span>
+      <span><b>状态</b>✅ 已上线</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#s1">功能概述</a></li>
+    <li><a href="#s2">页面结构与区块清单</a></li>
+    <li><a href="#s3">查询条件与联动关系</a></li>
+    <li><a href="#s4">数据来源：接口契约</a></li>
+    <li><a href="#s5">数据来源：数据库表</a></li>
+    <li><a href="#s6">关键计算口径</a></li>
+    <li><a href="#s7">展示内容明细</a></li>
+    <li><a href="#s8">结果导出</a></li>
+    <li><a href="#s9">口径差异与风险清单</a></li>
+    <li><a href="#s10">验收要点</a></li>
+  </ol>
+</nav>
+
+<!-- ══════════ 一、功能概述 ══════════ -->
+<section id="s1">
+  <h2 class="sec"><span class="num">一</span>功能概述</h2>
+
+  <h3>1.1 定位</h3>
+  <p>
+    结果驾驶舱是组合反算链路的<strong>最终交付视图</strong>。用户在「测算方案」页签配置好账户册方案与目标约束、
+    触发引擎完成寻优后，本页把一次运行的全部产出聚合到单一视图中，用于回答三类问题：
+  </p>
+  <ul>
+    <li><strong>跑出来了吗</strong> —— 目标达成情况、监管指标是否达标（目标达成进度区 + 8 张 KPI 卡）</li>
+    <li><strong>过程怎么样</strong> —— 指标沿 24 个月预测期的演进轨迹、评分档位（趋势图 + 雷达图）</li>
+    <li><strong>钱去哪了</strong> —— 资产负债表结构与变动（节点排行、大类分布、余额分布、走势）</li>
+  </ul>
+
+  <div class="note info">
+    <span class="nt">入口与承载</span>
+    <p>
+      路由 <code>/prcp-java/reverse</code>（「测算方案」菜单）→ 第 3 个页签「测算结果」→ 组件
+      <code>src/views/reverse/components/DashboardPanels.vue</code>。
+      本页为<strong>纯只读展示页</strong>，不写库；仅「导出结果」按钮产生一个下载动作。
+    </p>
+  </div>
+
+  <h3>1.2 与原系统的关系</h3>
+  <p>
+    本页对位 Python 原系统 <code>frontend/src/pages/ReverseDashboard.tsx</code>，在 Java 化过程中按原系统语义重建了 5 个区块，
+    并补充了原系统缺失的<strong>阈值达标徽标</strong>、<strong>趋势图指标切换</strong>、<strong>雷达图多指标图例</strong>三项交互。
+    口径差异详见 <a href="#s9">第九章</a>。
+  </p>
+
+  <h3>1.3 数据加载时序</h3>
+  <div class="flow">
+    <div class="fstep">
+      <div class="fn">STEP 1</div><div class="ft">拉取方案列表</div>
+      <div class="fd"><code>GET /options</code><br>取方案 + 默认 Run + 默认月份</div>
+    </div>
+    <div class="fstep">
+      <div class="fn">STEP 2</div><div class="ft">拉取运行记录</div>
+      <div class="fd"><code>GET /runs</code><br>按 scheme_code 展开</div>
+    </div>
+    <div class="fstep">
+      <div class="fn">STEP 3</div><div class="ft">拉取月份列表</div>
+      <div class="fd"><code>GET /dates</code><br>按 scheme + run 展开</div>
+    </div>
+    <div class="fstep">
+      <div class="fn">STEP 4</div><div class="ft">拉取全量快照</div>
+      <div class="fd"><code>GET /snapshot</code><br>本页主数据源</div>
+    </div>
+    <div class="fstep">
+      <div class="fn">STEP 5</div><div class="ft">拉取余额走势</div>
+      <div class="fd"><code>GET /balance-trend</code><br>末级节点 24 月序列</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 二、页面结构 ══════════ -->
+<section id="s2">
+  <h2 class="sec"><span class="num">二</span>页面结构与区块清单</h2>
+
+  <p>页面自上而下共 <strong>8 个区块</strong>，按「结论 → 过程 → 明细」的信息层级排列：</p>
+
+  <div class="layout">
+    <div class="blk">
+      <div class="blk-h"><span class="t">① Hero 头栏</span><span class="d">方案标识 / 上下文元信息 / 操作按钮</span></div>
+      <div class="blk-grid">
+        <div class="chip">标题 + 方案徽标<span>scheme_code · Run#N · M?</span></div>
+        <div class="chip">方案名称</div>
+        <div class="chip">账户册方案</div>
+        <div class="chip">数据日期</div>
+        <div class="chip">基期 + 预测期</div>
+        <div class="chip">刷新数据 / 导出结果</div>
+      </div>
+    </div>
+
+    <div class="blk">
+      <div class="blk-h"><span class="t">② 筛选条</span><span class="d">4 个查询条件 + 运行摘要标签组</span></div>
+      <div class="blk-grid">
+        <div class="chip">组合方案</div>
+        <div class="chip">运行记录</div>
+        <div class="chip">预测月份</div>
+        <div class="chip">余额口径</div>
+        <div class="chip">运行摘要<span>状态 / 总节点 / 含指标数</span></div>
+      </div>
+    </div>
+
+    <div class="blk">
+      <div class="blk-h"><span class="t">③ 目标达成进度</span><span class="d">条件渲染（无目标时不显示）</span></div>
+      <div class="blk-grid">
+        <div class="chip">指标</div>
+        <div class="chip">目标</div>
+        <div class="chip">实际</div>
+        <div class="chip">达成进度条</div>
+        <div class="chip">当前完成率</div>
+        <div class="chip">M12 完成率</div>
+      </div>
+    </div>
+
+    <div class="blk">
+      <div class="blk-h"><span class="t">④ KPI 卡片组</span><span class="d">4 列 × 2 行 = 8 张</span></div>
+      <div class="blk-grid">
+        <div class="chip">资产余额</div>
+        <div class="chip">负债余额</div>
+        <div class="chip">贷款加权平均利率</div>
+        <div class="chip">ROE</div>
+        <div class="chip">CET1</div>
+        <div class="chip">LCR</div>
+        <div class="chip">NSFR</div>
+        <div class="chip">△EVE</div>
+      </div>
+    </div>
+
+    <div class="row2">
+      <div class="half">
+        <div class="hh">⑤ 5 指标 24 月趋势</div>
+        <div style="font-size:12.5px;color:var(--text-3);line-height:1.8">
+          折线图（双 Y 轴）<br>
+          图头：5 个指标切换 chip（默认仅 ROE）<br>
+          浮窗：指标值 + 单位（% / 亿）
+        </div>
+      </div>
+      <div class="half">
+        <div class="hh">⑥ 5 指标评分雷达</div>
+        <div style="font-size:12.5px;color:var(--text-3);line-height:1.8">
+          雷达图（0–500 分制）<br>
+          图例：5 指标 + 分数，按档位着色<br>
+          浮窗：指标值 + 评分
+        </div>
+      </div>
+    </div>
+
+    <div class="row2">
+      <div class="half">
+        <div class="hh">⑦ 末级节点余额排行</div>
+        <div style="font-size:12.5px;color:var(--text-3);line-height:1.8">
+          表格，8 列<br>
+          全部末级节点，按 |余额| 降序<br>
+          序号 / 账户册方案 / 节点 / 大类<br>
+          当前余额 / 平均利率 / 月均余额 / 利息收支
+        </div>
+      </div>
+      <div class="half">
+        <div class="hh">⑧ 大类余额分布</div>
+        <div style="font-size:12.5px;color:var(--text-3);line-height:1.8">
+          环形图（占比）+ 柱状图（金额）<br>
+          随「余额口径」切换数据源<br>
+          基准日口径附口径说明提示
+        </div>
+      </div>
+    </div>
+
+    <div class="blk">
+      <div class="blk-h"><span class="t">⑨ 末级节点余额分布</span><span class="d">全宽横向条形图 + 大类过滤</span></div>
+      <div class="blk-grid">
+        <div class="chip">口径标签</div>
+        <div class="chip">按大类过滤</div>
+        <div class="chip">末级节点计数</div>
+        <div class="chip">基准日 / 预测月日期</div>
+      </div>
+    </div>
+
+    <div class="blk">
+      <div class="blk-h"><span class="t">⑩ 末级账户册余额走势</span><span class="d">全宽折线图 + 三视图切换</span></div>
+      <div class="blk-grid">
+        <div class="chip">按大类汇总</div>
+        <div class="chip">按节点明细（Top N）</div>
+        <div class="chip">单节点（可搜索）</div>
+        <div class="chip">月份数标签</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4 style="margin-top:0">布局规则</h4>
+    <table>
+      <thead><tr><th class="w-narrow">区块</th><th>布局</th><th>栅格</th><th>高度</th></tr></thead>
+      <tbody>
+        <tr><td>③④</td><td>KPI 卡片组</td><td><code>repeat(4, 1fr)</code>，≤1200px 降为 2 列</td><td>卡片自适应</td></tr>
+        <tr><td>⑤⑥</td><td>趋势 + 雷达</td><td><code>5fr 3fr</code></td><td>趋势 320px / 雷达 340px</td></tr>
+        <tr><td>⑦⑧</td><td>节点排行 + 大类分布</td><td><code>1fr 1fr</code></td><td>排行表 max-height 420px</td></tr>
+        <tr><td>⑨⑩</td><td>余额分布 + 余额走势</td><td><code>1fr</code>（整行）</td><td>均 420px</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════ 三、查询条件 ══════════ -->
+<section id="s3">
+  <h2 class="sec"><span class="num">三</span>查询条件与联动关系</h2>
+
+  <h3>3.1 筛选条明细</h3>
+  <div class="filters">
+    <div class="fitem">
+      <div class="fl">组合方案</div>
+      <div class="fv">scheme_code</div>
+      <div class="fd">下拉来源 <code>/options</code>；选项文案 <code>{code} - {name}</code></div>
+    </div>
+    <div class="fitem">
+      <div class="fl">运行记录</div>
+      <div class="fv">run_id</div>
+      <div class="fd">下拉来源 <code>/runs</code>；选项文案 <code>#{id} ({status})</code></div>
+    </div>
+    <div class="fitem">
+      <div class="fl">预测月份</div>
+      <div class="fv">date_offset</div>
+      <div class="fd">下拉来源 <code>/dates</code>；选项文案 <code>M{offset} ({data_date})</code></div>
+    </div>
+    <div class="fitem">
+      <div class="fl">余额口径</div>
+      <div class="fv">balanceMode</div>
+      <div class="fd"><code>base</code> 基准日当前余额 / <code>forecast</code> 当月预测余额；<strong>纯前端开关</strong></div>
+    </div>
+  </div>
+
+  <h3>3.2 联动关系</h3>
+  <table>
+    <thead><tr><th>操作</th><th>级联动作</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>切换<b>组合方案</b></td>
+        <td>重新拉取运行记录 → 重新拉取月份 → 重新拉取快照 + 余额走势</td>
+        <td>运行记录与月份均依赖 <code>scheme_code</code>，须级联刷新</td>
+      </tr>
+      <tr>
+        <td>切换<b>运行记录</b></td>
+        <td>重新拉取月份 → 重新拉取快照 + 余额走势</td>
+        <td>月份依赖 <code>(scheme_code, run_id)</code> 组合</td>
+      </tr>
+      <tr>
+        <td>切换<b>预测月份</b></td>
+        <td>重新拉取快照</td>
+        <td>仅影响当前期；<strong>基期固定为 M1</strong>，不随月份变化</td>
+      </tr>
+      <tr>
+        <td>切换<b>余额口径</b></td>
+        <td>仅前端重绘，不发请求</td>
+        <td>影响：大类分布环形图 + 金额柱图、末级节点余额分布条形图</td>
+      </tr>
+      <tr>
+        <td>点击<b>刷新数据</b></td>
+        <td>重新拉取快照</td>
+        <td>不重置筛选条件</td>
+      </tr>
+      <tr>
+        <td>切换<b>趋势图指标 chip</b></td>
+        <td>仅前端重绘</td>
+        <td>全部取消时自动回落 ROE（避免空图）</td>
+      </tr>
+      <tr>
+        <td>切换<b>余额走势视图</b></td>
+        <td>仅前端重绘</td>
+        <td>三种视图共用同一份 <code>balance-trend</code> 返回数据</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note warn">
+    <span class="nt">查询条件的三个口径注意点</span>
+    <ul>
+      <li><strong>「余额口径」不参与服务端查询</strong>——它是纯前端开关，在「基准日当前余额」与「当月预测余额」两套已返回数据间切换；因此切换时不会重新请求。</li>
+      <li><strong>「预测月份」只改当前期，不改基期</strong>——KPI 卡下方的「基期 …」行恒为 M1（<code>date_offset=1</code>）。当选择 M1 时，基期行与当前值相同，变化量为 0。</li>
+      <li><strong>「余额口径 = 基准日」时，分布图不随预测月份变化</strong>——基准日是方案起点、固定不变。页面已在环形图上方显式给出该提示。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ══════════ 四、接口契约 ══════════ -->
+<section id="s4">
+  <h2 class="sec"><span class="num">四</span>数据来源：接口契约</h2>
+
+  <p>
+    服务基址 <code>http://&lt;host&gt;:8008/prcp-java/api</code>（Spring context-path <code>/prcp-java/api</code>），
+    端点前缀 <code>/reverse-dashboard</code>，统一响应包装 <code>{ code, msg, data }</code>。
+  </p>
+
+  <h3>4.1 端点总览</h3>
+  <table>
+    <thead><tr><th>端点</th><th>方法</th><th>必填参数</th><th>可选参数</th><th>默认</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>/options</code></td><td>GET</td><td>—</td><td>—</td><td>—</td><td>方案列表 + 默认 Run / 月份</td></tr>
+      <tr><td><code>/runs</code></td><td>GET</td><td><code>scheme_code</code></td><td>—</td><td>—</td><td>该方案的运行记录</td></tr>
+      <tr><td><code>/dates</code></td><td>GET</td><td><code>scheme_code</code>、<code>run_id</code></td><td>—</td><td>—</td><td>该 Run 的月度预测点</td></tr>
+      <tr><td><code>/snapshot</code></td><td>GET</td><td>—</td><td><code>scheme_code</code>、<code>run_id</code>、<code>date_offset</code></td><td><code>2026</code> / 自动解析 / <code>1</code></td><td><strong>本页主数据源</strong></td></tr>
+      <tr><td><code>/balance-trend</code></td><td>GET</td><td>—</td><td><code>scheme_code</code>、<code>run_id</code></td><td><code>2026</code> / 自动解析</td><td>末级节点 24 月余额序列</td></tr>
+      <tr><td><code>/balance-export</code></td><td>GET</td><td>—</td><td><code>scheme_code</code>、<code>run_id</code></td><td>最新方案 / 最新 SUCCESS</td><td>导出 xlsx（二进制）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>4.2 <code>/options</code> 返回结构</h3>
+  <table>
+    <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>schemes[]</code></td><td>Array</td><td>方案列表，按 <code>prcp_reverse_scheme.id</code> 倒序</td></tr>
+      <tr><td><code>schemes[].rev_id</code></td><td>Integer</td><td>方案主键</td></tr>
+      <tr><td><code>schemes[].scheme_code</code></td><td>String</td><td>方案编码（如 <code>2026</code>、<code>REV_DNN_REG</code>）</td></tr>
+      <tr><td><code>schemes[].scheme_name</code></td><td>String</td><td>方案名称</td></tr>
+      <tr><td><code>schemes[].coa_scheme_id / code / name</code></td><td>Long / String</td><td>关联账户册方案</td></tr>
+      <tr><td><code>schemes[].base_data_date</code></td><td>String</td><td>基准日（方案起点）</td></tr>
+      <tr><td><code>schemes[].horizon_months</code></td><td>Integer</td><td>预测窗口月数，<strong>null 时兜底 24</strong></td></tr>
+      <tr><td><code>default.scheme_code</code></td><td>String</td><td>默认方案：优先 <code>scheme_code="2026"</code>，否则取列表首项</td></tr>
+      <tr><td><code>default.run_id</code></td><td>Long</td><td>默认 Run：该方案下最新 <code>SUCCESS</code>，无则 null</td></tr>
+      <tr><td><code>default.date_offset</code></td><td>Integer</td><td>默认月份 = <code>MAX(date_offset)</code>（通常 24），无 Run 时为 1</td></tr>
+    </tbody>
+  </table>
+
+  <h3>4.3 <code>/snapshot</code> 返回结构（主数据源）</h3>
+
+  <h4>顶层字段</h4>
+  <table>
+    <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>scheme_code / scheme_name</code></td><td>String</td><td>方案标识</td></tr>
+      <tr><td><code>coa_scheme_code / coa_scheme_name</code></td><td>String</td><td>账户册方案（可能 null）</td></tr>
+      <tr><td><code>base_data_date</code></td><td>String</td><td>基期日期（方案起点）</td></tr>
+      <tr><td><code>horizon_months</code></td><td>Integer</td><td>预测期月数（此处不兜底，可为 null）</td></tr>
+      <tr><td><code>run_id / date_offset / data_date</code></td><td>Long / Integer / String</td><td>本次查询命中的运行、月份偏移、对应数据日期</td></tr>
+      <tr><td><code>m12_date</code></td><td>String</td><td>M12 对应数据日期，无则 null</td></tr>
+      <tr><td><code>kpi</code></td><td>Map</td><td>当前期 KPI</td></tr>
+      <tr><td><code>kpi_base</code></td><td>Map</td><td>基期 KPI（恒为 M1）</td></tr>
+      <tr><td><code>trend</code></td><td>Map</td><td>24 月趋势</td></tr>
+      <tr><td><code>category_distribution</code></td><td>Map</td><td>5 大类分布（3 套口径）</td></tr>
+      <tr><td><code>node_matrix</code></td><td>Array</td><td>全部节点详情矩阵</td></tr>
+      <tr><td><code>top_nodes</code></td><td>Array</td><td><strong>全部末级节点</strong>，按 |余额| 降序</td></tr>
+      <tr><td><code>targets</code></td><td>Array</td><td>目标达成进度行</td></tr>
+      <tr><td><code>risk_alerts</code></td><td>Array</td><td>风险预警（按节点聚合）</td></tr>
+      <tr><td><code>risk_alert_total</code></td><td>Integer</td><td><strong>有告警的节点数</strong>（非告警条目总数）</td></tr>
+      <tr><td><code>thresholds</code></td><td>Map</td><td>5 指标监管阈值（常量）</td></tr>
+      <tr><td><code>kpi_scores</code></td><td>Array</td><td>5 指标评分（0–500）</td></tr>
+    </tbody>
+  </table>
+
+  <h4><code>kpi</code> 与 <code>kpi_base</code> 的字段差异</h4>
+  <table>
+    <thead><tr><th>字段</th><th class="w-narrow">kpi</th><th class="w-narrow">kpi_base</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>asset_total / liability_total / equity_total</code></td><td>✓</td><td>✓</td><td>仅末级节点求和，2 位小数</td></tr>
+      <tr><td><code>off_balance</code></td><td>✓</td><td>✗</td><td>基期不返回该字段</td></tr>
+      <tr><td><code>loan_weighted_rate</code></td><td>✓</td><td>✓</td><td>6 位小数，小数口径（0.038855 = 3.89%）</td></tr>
+      <tr><td><code>metric_avg</code></td><td>✓</td><td>✓</td><td>5 键，4 位小数，恒含全部键</td></tr>
+      <tr><td><code>metric_max / metric_min</code></td><td>✓</td><td>✗</td><td>基期不返回</td></tr>
+      <tr><td><code>total_nodes / with_metrics</code></td><td>✓</td><td>✗</td><td>基期不返回</td></tr>
+      <tr><td><code>period</code></td><td>✗</td><td>✓</td><td>基期专属：M1 的 data_date</td></tr>
+    </tbody>
+  </table>
+
+  <h4><code>category_distribution</code> 的三套口径</h4>
+  <table>
+    <thead><tr><th>字段</th><th>数据源</th><th>节点范围</th><th>日期</th></tr></thead>
+    <tbody>
+      <tr><td><code>by_count</code></td><td>节点元数据</td><td>全部节点</td><td>—</td></tr>
+      <tr><td><code>by_balance</code></td><td><code>prcp_data_reverse</code></td><td>全部节点</td><td>当前期</td></tr>
+      <tr><td><code>by_balance_forecast</code></td><td><code>prcp_data_reverse</code></td><td>仅末级</td><td>当前期</td></tr>
+      <tr><td><code>by_balance_base</code></td><td><code>prcp_data_basic</code></td><td>仅末级</td><td>基准日</td></tr>
+    </tbody>
+  </table>
+
+  <h4><code>balance-trend</code> 返回结构</h4>
+  <table>
+    <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>months[]</code></td><td>Array&lt;{offset, date}&gt;</td><td>预测期月份序列，<strong>offset 从 1 起</strong>（不含基准日 0）</td></tr>
+      <tr><td><code>categories[]</code></td><td>Array&lt;{key, values}&gt;</td><td>5 大类逐月余额，2 位小数</td></tr>
+      <tr><td><code>nodes[]</code></td><td>Array</td><td>仅末级节点，含 <code>code / name / category / coa_scheme_code / total / values</code>；<code>total</code> = Σ|逐月余额|，按此降序</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note info">
+    <span class="nt">余额走势三视图的服务端支持情况</span>
+    <p>
+      服务端<strong>不区分视图</strong>，一次返回 <code>categories</code> + <code>nodes</code> 全量数据；
+      「按大类汇总 / 按节点明细（Top N）/ 单节点」三种视图<strong>全部由前端实现</strong>（<code>balanceTrendView</code> 变量，默认 <code>category</code>）。
+      Top N 截断也在前端完成（<code>slice</code>），服务端不截断。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════ 五、数据表 ══════════ -->
+<section id="s5">
+  <h2 class="sec"><span class="num">五</span>数据来源：数据库表</h2>
+
+  <table>
+    <thead><tr><th>数据表</th><th>业务含义</th><th>本页用途</th><th>关键字段</th></tr></thead>
+    <tbody>
+      <tr><td><code>prcp_reverse_scheme</code></td><td>反算方案</td><td>方案列表、基期、预测期、关联 COA</td><td><code>scheme_code</code>、<code>coa_scheme_id</code>、<code>data_date</code>、<code>horizon_months</code></td></tr>
+      <tr><td><code>prcp_coa_scheme</code></td><td>账户册方案</td><td>账户册方案名称</td><td><code>scheme_code</code>、<code>scheme_name</code></td></tr>
+      <tr><td><code>prcp_reverse_run</code></td><td>反算运行记录</td><td>运行列表、默认 Run</td><td><code>id</code>、<code>scheme_id</code>、<code>status</code>、<code>optimal_value</code></td></tr>
+      <tr><td><code>prcp_data_reverse</code></td><td>反算结果（月度）</td><td>余额、利率、利息、逐月序列</td><td><code>scheme_code</code>、<code>run_id</code>、<code>date_offset</code>、<code>offset_unit</code>、<code>current_balance</code>、<code>weighted_rate</code></td></tr>
+      <tr><td><code>prcp_coa_node</code></td><td>账户册节点结构</td><td>节点元数据、末级判定、层级</td><td><code>node_code</code>、<code>path</code>、<code>parent_id</code>、<code>node_level</code></td></tr>
+      <tr><td><code>prcp_data_basic</code></td><td>基础数据（基准日）</td><td>基准日余额、末级标记</td><td><code>node_code</code>、<code>data_date</code>、<code>current_balance</code>、<code>is_leaf</code></td></tr>
+      <tr><td><code>prcp_metric_coefficient</code></td><td>节点级指标系数</td><td>ROE/CET1/LCR/NSFR/△EVE 指标值</td><td><code>scheme_code</code>、<code>data_date</code>、<code>node_code</code>、<code>metric_type</code>、<code>current_value</code></td></tr>
+      <tr><td><code>prcp_kpi_definition / _value / _score_rule / _score_segment</code></td><td>KPI 定义与评分</td><td>雷达图评分（0–500）</td><td><code>kpi_code</code>、<code>score</code>、<code>segment_desc</code></td></tr>
+      <tr><td><code>prcp_reverse_target</code></td><td>反算目标约束</td><td>目标达成进度</td><td><code>kpi_code</code>、<code>target_value</code>、<code>constraint_type</code>、<code>weight</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="note warn">
+    <span class="nt">数据表历史坑（已在代码注释中标注）</span>
+    <p>
+      <code>prcp_metric_coefficient.scheme_code</code> 存的是<strong>反算方案 code</strong>（如 <code>REV_DNN_REG</code>），
+      而<strong>不是</strong>账户册 code（<code>ZX_COA</code>）—— 早期曾用 COA code 查询导致恒空。
+      <code>prcp_data_basic</code> 表<strong>无 <code>scheme_id</code> 列</strong>，只能按 <code>(data_date, node_code)</code> 定位。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════ 六、计算口径 ══════════ -->
+<section id="s6">
+  <h2 class="sec"><span class="num">六</span>关键计算口径</h2>
+
+  <h3>6.1 监管阈值（常量）</h3>
+  <table>
+    <thead><tr><th>指标</th><th>阈值</th><th>方向</th><th>超标级别</th></tr></thead>
+    <tbody>
+      <tr><td>ROE</td><td>≥ 11.0%</td><td>越高越好</td><td>&lt; 阈值×0.9 → critical</td></tr>
+      <tr><td>CET1</td><td>≥ 8.5%</td><td>越高越好</td><td>&lt; 阈值×0.9 → critical</td></tr>
+      <tr><td>LCR</td><td>≥ 100.0%</td><td>越高越好</td><td>&lt; 阈值×0.9 → critical</td></tr>
+      <tr><td>NSFR</td><td>≥ 100.0%</td><td>越高越好</td><td>&lt; 阈值×0.9 → critical</td></tr>
+      <tr><td>△EVE</td><td>|x| ≤ 5.0 亿</td><td>越低越好</td><td>|x| &gt; 阈值×1.2 → critical</td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.2 Run 解析与「断裂回退」</h3>
+  <p>
+    历史数据中 <code>prcp_reverse_run.id</code> 与 <code>prcp_data_reverse.run_id</code> 存在<strong>关联断裂</strong>
+    （引擎写入的 run_id 与事后登记的 run 记录 id 不一致）。若只取「最新 SUCCESS」，按 <code>(scheme_code, run_id)</code>
+    查月度数据将得到 0 行 → 整页空白。因此设计了三级解析：
+  </p>
+  <div class="formula">
+<span class="cm"># ① 显式指定 run_id → 直接采用，不校验、不回退</span>
+if (runId != null) return runId;
+
+<span class="cm"># ② 该方案下最新 SUCCESS run，且确认它在 prcp_data_reverse 中确有数据</span>
+candidate = SELECT id FROM prcp_reverse_run
+           WHERE scheme_id = ? AND status = 'SUCCESS' AND is_deleted = 0
+           ORDER BY id DESC LIMIT 1
+if (COUNT(prcp_data_reverse WHERE scheme_code = ? AND run_id = candidate) &gt; 0) return candidate;
+
+<span class="cm"># ③ 断裂回退：该 scheme_code 下实际有数据的 MAX(run_id)</span>
+rid = SELECT MAX(run_id) FROM prcp_data_reverse WHERE scheme_code = ? AND is_deleted = 0
+if (rid != null) return rid;
+
+<span class="cm"># ④ 都取不到</span>
+throw BizException.notFound("该方案无 SUCCESS 运行记录")   <span class="cm">→ code 404</span>
+  </div>
+
+  <h3>6.3 指标均值（<code>metric_avg</code>）</h3>
+  <div class="note warn">
+    <span class="nt">口径定义（需在验收时重点核对）</span>
+    <p>
+      <strong>节点级指标全样本等权均值</strong>：分母为「在该指标上取值非 null 的节点数」，
+      <strong>不做末级过滤、不做余额加权</strong>，4 位小数 HALF_UP。
+      同一算法同时用于当前期 <code>kpi.metric_avg</code>、基期 <code>kpi_base.metric_avg</code>、
+      以及目标达成行的 <code>current_value</code> / <code>m12_value</code>。
+    </p>
+  </div>
+  <div class="formula">
+vals = [ mv[m] for node in ALL_NODES if (mv := metricMap[node.node_code]) and mv[m] != null ]
+metric_avg[m] = SUM(vals) / COUNT(vals)     <span class="cm">// scale 4, HALF_UP</span>
+  </div>
+
+  <h3>6.4 贷款加权平均利率（<code>loan_weighted_rate</code>）</h3>
+  <div class="formula">
+<span class="cm"># 节点范围: 5 个 L4 前缀白名单 (S01010101 ~ S01010105)</span>
+<span class="cm"># L3 父节点 S010101000000 因前缀不匹配而自然被排除</span>
+<span class="cm"># 剔除近零余额 |bal| &lt; 0.01</span>
+loanNum += bal * rate      <span class="cm">// 带符号余额</span>
+loanDen += bal            <span class="cm">// 带符号余额</span>
+loan_weighted_rate = (loanDen &gt; 0) ? loanNum / loanDen : null   <span class="cm">// scale 6</span>
+  </div>
+  <p>
+    库中 <code>weighted_rate</code> 为<strong>小数</strong>（0.038855 = 3.89%），前端展示时须 ×100。
+    本页由 <code>loanRatePct()</code> 统一换算，表格与 KPI 卡共用。
+  </p>
+
+  <h3>6.5 大类归类（<code>classify</code>）</h3>
+  <table>
+    <thead><tr><th>大类</th><th>判定条件（按顺序短路，先命中先返回）</th><th>配色</th></tr></thead>
+    <tbody>
+      <tr><td>资产 ASSET</td><td>code 前缀 <code>S01</code> / <code>ZX_A</code>；或 path 前缀 <code>/L1_资产</code>；或 path 恰等于 <code>/L1_ASSET/</code></td><td><code>#5B8FF9</code></td></tr>
+      <tr><td>负债 LIABILITY</td><td>code 前缀 <code>S02</code> / <code>ZX_L</code>；或 path 前缀 <code>/L1_负债</code></或恰等于 <code>/L1_LIABILITY/</code></td><td><code>#F6903D</code></td></tr>
+      <tr><td>权益 EQUITY</td><td>code 前缀 <code>S03</code> / <code>ZX_E</code>；或 path 前缀 <code>/L1_权益</code></或恰等于 <code>/L1_EQUITY/</code></td><td><code>#7D6FFC</code></td></tr>
+      <tr><td>表外 OFF_BALANCE</td><td><strong>仅 path</strong>：前缀 <code>/L1_表外</code> 或恰等于 <code>/L1_OFF_BALANCE/</code></td><td><code>#008685</code></td></tr>
+      <tr><td>其他 OTHER</td><td>兜底</td><td><code>#61DDAA</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.6 末级节点判定</h3>
+  <table>
+    <thead><tr><th>场景</th><th>判定方式</th></tr></thead>
+    <tbody>
+      <tr><td>KPI 余额汇总（<code>sumByCat</code>）</td><td><strong>仅</strong> path 前缀推断：节点 N 是父节点 ⇔ 存在 M 使 <code>M.path</code> 以 <code>N.path + "/"</code> 开头</td></tr>
+      <tr><td>大类分布 / 节点矩阵</td><td>优先取 <code>prcp_data_basic.is_leaf</code>（基准日），缺失时回退 path 前缀推断</td></tr>
+      <tr><td>余额走势 / 导出</td><td>优先取 <code>prcp_data_basic.is_leaf</code>（基准日），缺失时回退 path / parent_id 子树推断</td></tr>
+    </tbody>
+  </table>
+  <div class="note info">
+    <span class="nt">说明</span>
+    <p>两套判定在基础数据标记与路径结构一致时结果相同；当二者不一致时，KPI 余额与分布图的末级集合可能出现差异。详见<a href="#s9">第九章</a>第 2 项。</p>
+  </div>
+
+  <h3>6.7 目标完成率（<code>completion</code>）</h3>
+  <div class="formula">
+<span class="cm"># 量纲保护: |actual / |target|| 不在 [0.001, 1000] → 返回 null (不可比)</span>
+GE:  actual * 100 / target          <span class="cm">// 分母用带符号 target</span>
+LE:  (actual == 0) ? null : target * 100 / actual   <span class="cm">// 分母用带符号 actual</span>
+EQ:  (1 - |actual - target| / |target|) * 100
+其他 constraint_type → null
+  </div>
+  <table>
+    <thead><tr><th>字段</th><th>口径</th></tr></thead>
+    <tbody>
+      <tr><td><code>current_rate</code></td><td>当前期实际值对目标值的完成率，单位 %，2 位小数</td></tr>
+      <tr><td><code>m12_rate</code></td><td>M12 期实际值对目标值的完成率；M12 实际值取 <code>prcp_metric_coefficient</code> 在 M12 数据日期的值</td></tr>
+      <tr><td><code>achieved</code></td><td>GE → <code>actual ≥ target</code>；LE → <code>actual ≤ target</code>；其他 → <code>|actual − target| &lt; 1e-9</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.8 评分档位配色（雷达图 / 图例）</h3>
+  <table>
+    <thead><tr><th>分数区间</th><th>颜色</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td>≥ 480</td><td><code>#52c41a</code> 绿</td><td>安全</td></tr>
+      <tr><td>≥ 300</td><td><code>#13c2c2</code> 青</td><td>良好</td></tr>
+      <tr><td>≥ 150</td><td><code>#faad14</code> 金</td><td>关注</td></tr>
+      <tr><td>&gt; 0</td><td><code>#fa8c16</code> 橙</td><td>偏弱</td></tr>
+      <tr><td>= 0</td><td><code>#f5222d</code> 红</td><td>不达标</td></tr>
+    </tbody>
+  </table>
+  <p>评分满分 500（v12b 评分制），取自 <code>prcp_kpi_value.score</code>，<strong>绑定基准日</strong>而非所选月份。</p>
+</section>
+
+<!-- ══════════ 七、展示内容明细 ══════════ -->
+<section id="s7">
+  <h2 class="sec"><span class="num">七</span>展示内容明细</h2>
+
+  <h3>7.1 8 张 KPI 卡</h3>
+  <table>
+    <thead>
+      <tr><th>卡片</th><th>主值</th><th>副标题</th><th>基期对比行</th><th>达标徽标</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>资产余额</td><td>金额（亿/万亿）</td><td>—</td><td>基期 + 变化量</td><td>—</td></tr>
+      <tr><td>负债余额</td><td>金额（亿/万亿）</td><td>—</td><td>基期 + 变化量</td><td>—</td></tr>
+      <tr><td>贷款加权平均利率</td><td>百分数</td><td>口径说明（5 个 L4 子节点按余额加权）</td><td>基期 + 变化量</td><td>—</td></tr>
+      <tr><td>ROE 净资产收益率</td><td>百分数</td><td>阈值 ≥ 11%</td><td>基期 + 变化量</td><td><span class="tag t-req">未达标</span></td></tr>
+      <tr><td>CET1 核心一级</td><td>百分数</td><td>阈值 ≥ 8.5%</td><td>基期 + 变化量</td><td><span class="tag t-req">未达标</span></td></tr>
+      <tr><td>LCR 流动性覆盖率</td><td>百分数</td><td>阈值 ≥ 100%</td><td>基期 + 变化量</td><td><span class="tag t-req">未达标</span></td></tr>
+      <tr><td>NSFR 净稳定资金</td><td>百分数</td><td>阈值 ≥ 100%</td><td>基期 + 变化量</td><td><span class="tag t-req">未达标</span></td></tr>
+      <tr><td>△EVE 利率风险</td><td>金额（亿）</td><td>阈值 |x| ≤ 5 亿</td><td>基期 + 变化量</td><td><span class="tag t-req">超标</span></td></tr>
+    </tbody>
+  </table>
+
+  <div class="note ok">
+    <span class="nt">KPI 卡设计约定</span>
+    <ul>
+      <li><strong>主值旁不显示涨跌箭头</strong>——方向信息由基期对比行的「±变化量」承载，避免同一张卡出现两个方向指示。</li>
+      <li><strong>达标徽标</strong>替代原系统的红色箭头：ROE/CET1/LCR/NSFR 低于下限标「未达标」（橙），△EVE 超过绝对值上限标「超标」（红）；达标则不显示徽标。</li>
+      <li><strong>变化量颜色</strong>：越高越好类指标涨绿跌红；越低越好类（贷款利率、△EVE）跌绿涨红；规模类（资产、负债）涨蓝跌橙。</li>
+      <li><strong>变化量四舍五入为 0 时抹掉负号</strong>，避免出现「−0.00」这类无意义显示。</li>
+      <li>金额采用紧凑格式：≥1 万亿显示「X.XX 万亿」，≥1 亿显示「X.X 亿」，去掉千分位与「元」字。</li>
+    </ul>
+  </div>
+
+  <h3>7.2 目标达成进度区</h3>
+  <table>
+    <thead><tr><th>列</th><th>内容</th><th>样式</th></tr></thead>
+    <tbody>
+      <tr><td>指标</td><td>指标中文名（ROE 净资产收益率等）</td><td>按指标类型着色</td></tr>
+      <tr><td>目标</td><td>约束符号 + 目标值（<code>≥</code> / <code>≤</code> / <code>=</code>）</td><td>灰色</td></tr>
+      <tr><td>实际</td><td>当前期实际值</td><td>按指标类型着色</td></tr>
+      <tr><td>达成进度</td><td>进度条，宽度 = 当前完成率（0–100 截断）</td><td>达成绿 / 未达成红 / 不可比灰</td></tr>
+      <tr><td>当前完成率</td><td>百分比文本</td><td>达成绿 / 未达成红 / 不可比灰</td></tr>
+      <tr><td>M12 完成率</td><td>12 个月后完成率</td><td>同上</td></tr>
+    </tbody>
+  </table>
+  <p>该区块<strong>条件渲染</strong>：方案未配置目标时整块不显示。</p>
+
+  <h3>7.3 5 指标 24 月趋势</h3>
+  <table>
+    <thead><tr><th>项</th><th>规格</th></tr></thead>
+    <tbody>
+      <tr><td>图表类型</td><td>折线图（平滑），双 Y 轴</td></tr>
+      <tr><td>左轴</td><td>百分比指标（ROE / CET1 / LCR / NSFR），单位 %</td></tr>
+      <tr><td>右轴</td><td>△EVE，单位 亿</td></tr>
+      <tr><td>X 轴</td><td>24 个月标签（YYMMDD），旋转 40°</td></tr>
+      <tr><td><strong>默认显示</strong></td><td><strong>仅 ROE</strong> —— 5 条线量级差 100 倍（LCR 148 vs ROE 12），全开时 ROE/CET1 会被压成直线</td></tr>
+      <tr><td>指标切换</td><td>图头 5 个 chip，可累加/取消；全部取消时自动回落 ROE</td></tr>
+      <tr><td>浮窗</td><td>月份 + 各指标值 + 单位（% / 亿）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>7.4 5 指标评分雷达</h3>
+  <table>
+    <thead><tr><th>项</th><th>规格</th></tr></thead>
+    <tbody>
+      <tr><td>图表类型</td><td>雷达图（多边形），5 维度，满分 500</td></tr>
+      <tr><td>维度</td><td>ROE 净资产收益率 / CET1 核心一级 / LCR 流动性覆盖 / NSFR 净稳定资金 / △EVE 利率风险</td></tr>
+      <tr><td>图例</td><td>按指标列出各自分数（如 <code>ROE 351</code>），按档位着色</td></tr>
+      <tr><td>顶点</td><td>按评分档位着色，与图例一一对应</td></tr>
+      <tr><td>浮窗</td><td>指标值 + 评分（不展示档位文字，档位已由颜色表达）</td></tr>
+    </tbody>
+  </table>
+  <div class="note info">
+    <span class="nt">雷达图实现要点</span>
+    <p>
+      ECharts 的 radar series <strong>不支持 legend</strong>（图例仅绑定 series.name），故拆成「1 个完整轮廓 series + 5 个单指标 series」：
+      单指标 series 只有自己那一维有值（其余为 <code>'-'</code> 空点），负责产生 5 个图例项与彩色顶点；
+      额外叠加的完整轮廓 series 不进图例，保证轮廓是完整五边形而非星芒形。
+    </p>
+  </div>
+
+  <h3>7.5 末级节点余额排行表</h3>
+  <table>
+    <thead><tr><th>列</th><th>宽度</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td>#</td><td>36</td><td>序号，1 起连续</td></tr>
+      <tr><td>账户册方案</td><td>84</td><td>COA 方案编码（标签）</td></tr>
+      <tr><td>节点</td><td>100（min）</td><td>节点名称，超长省略 + hover 显示编码</td></tr>
+      <tr><td>大类</td><td>52</td><td>资产 / 负债 / 权益 / 表外（标签，按大类配色）</td></tr>
+      <tr><td>当前余额</td><td>94</td><td>紧凑金额格式</td></tr>
+      <tr><td>平均利率</td><td>64</td><td>百分数（×100 后显示）</td></tr>
+      <tr><td>月均余额</td><td>94</td><td>紧凑金额格式</td></tr>
+      <tr><td>利息收支</td><td>94</td><td>紧凑金额格式</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>数据源为后端 <code>top_nodes</code>：<strong>全部末级节点</strong>（不做 Top N 截断），按 |当前余额| 降序</li>
+    <li>覆盖<strong>全部账户册方案</strong>（跨 COA 统一排名）</li>
+    <li>表格总宽 618px，在双栏布局的 622px 可用宽内无横向滚动，8 列一屏全露出</li>
+  </ul>
+
+  <h3>7.6 大类余额分布</h3>
+  <table>
+    <thead><tr><th>项</th><th>规格</th></tr></thead>
+    <tbody>
+      <tr><td>环形图</td><td>5 大类占比，标签显示「名称 + 百分比」</td></tr>
+      <tr><td>金额柱状图</td><td>5 大类金额对比</td></tr>
+      <tr><td>口径切换</td><td>跟随全局「余额口径」：基准日 → <code>by_balance_base</code>；当月预测 → <code>by_balance_forecast</code></td></tr>
+      <tr><td>提示</td><td>基准日口径下显示说明：基准日固定不变，需看随月份变化的余额请切换口径</td></tr>
+    </tbody>
+  </table>
+
+  <h3>7.7 末级节点余额分布（条形图）</h3>
+  <ul>
+    <li>横向条形图，按 |余额| 降序，<strong>金额大的显示在顶部</strong></li>
+    <li>按大类着色，与环形图配色一致</li>
+    <li>支持「按大类过滤」下拉；显示末级节点总数与口径日期标签</li>
+    <li>浮窗显示节点编码、名称、大类、余额与日期</li>
+  </ul>
+
+  <h3>7.8 末级账户册余额走势</h3>
+  <table>
+    <thead><tr><th>视图</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>按大类汇总</td><td>默认视图，绘制 5 大类的 24 月余额曲线</td></tr>
+      <tr><td>按节点明细</td><td>绘制规模最大的 Top N 节点曲线，N 可选 5 / 10 / 15 / 20 / 全部</td></tr>
+      <tr><td>单节点</td><td>绘制单个指定节点的曲线，节点下拉可搜索</td></tr>
+    </tbody>
+  </table>
+  <p>曲线数超过 20 条时自动降级（隐藏数据点符号、线宽收窄）。</p>
+</section>
+
+<!-- ══════════ 八、导出 ══════════ -->
+<section id="s8">
+  <h2 class="sec"><span class="num">八</span>结果导出</h2>
+
+  <p>点击 Hero 区「导出结果」按钮触发，下载 xlsx 文件。</p>
+  <table>
+    <thead><tr><th>项</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td>端点</td><td><code>GET /reverse-dashboard/balance-export?scheme_code=&amp;run_id=</code></td></tr>
+      <tr><td>参数</td><td>均可选；不传时取<strong>最新方案</strong>与该方案<strong>最新 SUCCESS Run</strong></td></tr>
+      <tr><td>文件名</td><td><code>组合反算结果导出_{scheme_code}_run{run_id}.xlsx</code>（URL 编码，中文文件名）</td></tr>
+      <tr><td>格式</td><td>4 个 Sheet，数值格式 <code>#,##0.00</code></td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <thead><tr><th>Sheet</th><th>内容</th><th>结构</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>① 账户册结构</td>
+        <td>逐节点逐月余额明细</td>
+        <td>列：节点编码 / 节点名称 / 层级 / 大类 / 末级节点 / 各月余额<br>
+            非末级行以<strong>上卷值</strong>填充（子树内末级节点之和）并加浅蓝底</td>
+      </tr>
+      <tr>
+        <td>② 按层级汇总</td>
+        <td>大类 × 层级的节点数与逐月汇总</td>
+        <td>列：大类 / 层级 / 节点数 / 末级节点数 / 各月汇总<br>
+            末行为「末级合计」</td>
+      </tr>
+      <tr>
+        <td>③ 末级节点大类汇总</td>
+        <td>5 大类逐月金额</td>
+        <td>列：大类 / 各月金额，末行为「合计」</td>
+      </tr>
+      <tr>
+        <td>④ 口径说明</td>
+        <td>12 项元信息</td>
+        <td>组合方案 / Run ID / 账户册方案 / 基准日 / 预测期 / 月份区间 /
+            节点数 / 有预测值节点数 / 数据来源 / 导出时间 / 余额口径 / 单位说明</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note warn">
+    <span class="nt">导出口径与页面的差异（使用前需知悉）</span>
+    <ul>
+      <li><strong>节点范围不同</strong>：导出仅覆盖<strong>方案自身关联的那一套账户册</strong>，而页面覆盖全部 COA 方案。</li>
+      <li><strong>余额口径不同</strong>：导出对父节点做<strong>层级上卷</strong>（子树末级之和），页面只取末级节点自身值。</li>
+      <li><strong>Sheet ② 的层级行之间存在父子重叠</strong>，跨行相加会重复计数；仅末行「末级合计」是干净口径。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ══════════ 九、风险清单 ══════════ -->
+<section id="s9">
+  <h2 class="sec"><span class="num">九</span>口径差异与风险清单</h2>
+
+  <p>以下 20 项为源码审阅与实测比对中识别出的口径差异或实现风险，按影响程度分级，供后续迭代排期参考。</p>
+
+  <table class="risk">
+    <thead><tr><th>#</th><th>级别</th><th>位置</th><th>问题</th><th>影响</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><span class="lvl lv1">高</span></td><td><code>category_distribution.by_balance</code></td>
+        <td>数据来自 <code>prcp_data_reverse</code>，却标注 <code>balance_source="prcp_data_basic"</code>；<code>balance_date</code> 标基准日但值取当前期；且<strong>未做末级过滤</strong>（父子重复计数）</td>
+        <td>大类分布口径错误风险</td></tr>
+      <tr><td>2</td><td><span class="lvl lv1">高</span></td><td><code>sumByCat</code> vs <code>isLeafFlag</code></td>
+        <td>前者仅用 path 前缀推断末级，后者优先取 <code>prcp_data_basic.is_leaf</code></td>
+        <td>KPI 余额与分布图的末级集合可能不一致</td></tr>
+      <tr><td>3</td><td><span class="lvl lv1">高</span></td><td><code>options.default.date_offset</code></td>
+        <td>取 <code>MAX(date_offset)</code>（通常 24），而 <code>/snapshot</code> 缺省为 1</td>
+        <td>前端若直接采用默认值会落到 M24 而非 M1</td></tr>
+      <tr><td>4</td><td><span class="lvl lv1">高</span></td><td>目标达成进度条</td>
+        <td>进度条宽度用完成率（99.28% 即 99% 宽），颜色却按 <code>achieved</code> 标红</td>
+        <td>出现「红色满条 + 文字标未达成」的视觉矛盾</td></tr>
+      <tr><td>5</td><td><span class="lvl lv2">中</span></td><td><code>options</code> / <code>balance-export</code> 默认 Run</td>
+        <td>均只取最新 <code>SUCCESS</code>，<strong>不走断裂回退逻辑</strong></td>
+        <td>可能指向无数据的 Run</td></tr>
+      <tr><td>6</td><td><span class="lvl lv2">中</span></td><td><code>snapshot</code> 空响应</td>
+        <td>节点为空或无月度数据时返回 <code>{code:0, data:{}}</code>，<strong>无任何报错</strong></td>
+        <td>前端需处理「字段全缺」情形</td></tr>
+      <tr><td>7</td><td><span class="lvl lv2">中</span></td><td><code>kpi_scores</code></td>
+        <td>绑定<strong>基准日</strong>，不随所选月份变化</td>
+        <td>雷达图评分不反映所选月份</td></tr>
+      <tr><td>8</td><td><span class="lvl lv2">中</span></td><td>trend 指标 fallback 链</td>
+        <td>与 <code>kpi.metric_avg</code> 所用链不同（含 COA 档、不限日期）</td>
+        <td>同一响应内 KPI 均值与趋势末月值可能来自不同数据源</td></tr>
+      <tr><td>9</td><td><span class="lvl lv2">中</span></td><td><code>balance-trend</code> 错误码</td>
+        <td>方案不存在时 <code>queryForMap</code> 抛异常 → HTTP 500；<code>snapshot</code> 为 404</td>
+        <td>错误码不一致</td></tr>
+      <tr><td>10</td><td><span class="lvl lv2">中</span></td><td>导出 Sheet ②</td>
+        <td>层级行含父子重叠，跨行相加会重复计数</td>
+        <td>报表二次汇总出错风险</td></tr>
+      <tr><td>11</td><td><span class="lvl lv2">中</span></td><td>导出 Sheet ④ 单位说明</td>
+        <td>称「各层级互不重叠」，与 Sheet ② 实际不符</td>
+        <td>文案与实现冲突</td></tr>
+      <tr><td>12</td><td><span class="lvl lv2">中</span></td><td>导出文件名</td>
+        <td>用原始入参而非解析后的方案 / Run</td>
+        <td>空参时文件名缺方案段</td></tr>
+      <tr><td>13</td><td><span class="lvl lv3">低</span></td><td><code>completion</code> 的 GE 分母</td>
+        <td>用带符号 <code>target</code>，负目标 → 完成率为负</td>
+        <td>负目标场景展示异常</td></tr>
+      <tr><td>14</td><td><span class="lvl lv3">低</span></td><td><code>targets[].achieved</code> 的 EQ</td>
+        <td>用精确相等（1e-9）判定，与 <code>current_rate</code> 的比例公式语义不一致</td>
+        <td>EQ 目标几乎恒为未达成</td></tr>
+      <tr><td>15</td><td><span class="lvl lv3">低</span></td><td><code>risk_alert_total</code></td>
+        <td>是有告警的<strong>节点数</strong>，非告警条目总数</td>
+        <td>统计口径误解风险</td></tr>
+      <tr><td>16</td><td><span class="lvl lv3">低</span></td><td><code>balance-trend</code> <code>monthByNode</code></td>
+        <td>按 <code>node_code</code> 建键而非 <code>coa_node_id</code></td>
+        <td>跨 COA 同 code 会互相覆盖</td></tr>
+      <tr><td>17</td><td><span class="lvl lv3">低</span></td><td>鉴权</td>
+        <td>JWT 过滤器只解析不拦截，端点无 <code>@PreAuthorize</code></td>
+        <td>实际可匿名访问</td></tr>
+      <tr><td>18</td><td><span class="lvl lv3">低</span></td><td>多处 Javadoc</td>
+        <td><code>options</code>(algorithms)、<code>runs</code>(started_at)、<code>dates</code>(纯数字数组)、导出文件名描述均与实现不符</td>
+        <td>文档误导</td></tr>
+      <tr><td>19</td><td><span class="lvl lv3">低</span></td><td>资产 / 负债 KPI 卡</td>
+        <td>缺口径说明行，其余 6 张有「阈值…」或说明</td>
+        <td>两行卡片结构不齐</td></tr>
+      <tr><td>20</td><td><span class="lvl lv3">低</span></td><td>测试数据特征</td>
+        <td><code>ZX_COA</code> 为等差构造数据（每期 +0.04），ROE/CET1/LCR 变化量同为 +0.92</td>
+        <td>对外演示前建议换真实 Run</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ══════════ 十、验收要点 ══════════ -->
+<section id="s10">
+  <h2 class="sec"><span class="num">十</span>验收要点</h2>
+
+  <h3>10.1 功能验收清单</h3>
+  <table>
+    <thead><tr><th>编号</th><th>验收项</th><th>预期</th></tr></thead>
+    <tbody>
+      <tr><td>A-01</td><td>进入「测算方案 → 测算结果」</td><td>8 个区块按序渲染，Hero 显示当前方案 / Run / 月份标识</td></tr>
+      <tr><td>A-02</td><td>切换组合方案</td><td>运行记录、月份联动刷新，快照与走势重新加载</td></tr>
+      <tr><td>A-03</td><td>切换运行记录</td><td>月份联动刷新，快照与走势重新加载</td></tr>
+      <tr><td>A-04</td><td>切换预测月份</td><td>KPI 主值、目标达成实际值、分布图（预测口径）随之变化；<strong>基期行保持 M1 不变</strong></td></tr>
+      <tr><td>A-05</td><td>切换余额口径</td><td>分布图 / 余额分布条形图在「基准日」「当月预测」间切换，无网络请求</td></tr>
+      <tr><td>A-06</td><td>检查 KPI 卡</td><td>主值旁<strong>无箭头</strong>；5 个阈值指标带达标徽标；变化量无「−0.00」</td></tr>
+      <tr><td>A-07</td><td>检查贷款利率</td><td>显示为百分数（如 3.89%），非 0.0389%</td></tr>
+      <tr><td>A-08</td><td>操作趋势图 chip</td><td>默认仅 ROE；点击可累加；全部取消后回落 ROE；浮窗带单位</td></tr>
+      <tr><td>A-09</td><td>检查雷达图</td><td>图例含 5 个指标及分数；顶点颜色与图例一致；浮窗显示指标值 + 评分</td></tr>
+      <tr><td>A-10</td><td>检查节点排行表</td><td>行数 = 末级节点总数（当前 37）；序号连续；余额严格递减；8 列全部可见无横向滚动</td></tr>
+      <tr><td>A-11</td><td>检查余额走势图</td><td>三种视图可切换；单节点下拉可搜索；节点曲线与排行表规模一致</td></tr>
+      <tr><td>A-12</td><td>点击导出结果</td><td>下载 4 Sheet 的 xlsx，文件名含方案与 Run，数字可正常打开</td></tr>
+    </tbody>
+  </table>
+
+  <h3>10.2 数据一致性验收</h3>
+  <table>
+    <thead><tr><th>编号</th><th>校验项</th><th>校验方法</th></tr></thead>
+    <tbody>
+      <tr><td>B-01</td><td>资产负债表平衡</td><td>资产 = 负债 + 权益（当前期与基期均应成立）</td></tr>
+      <tr><td>B-02</td><td>基期差值自洽</td><td>KPI 卡变化量 = 主值 − 基期值（允许展示精度内的舍入差）</td></tr>
+      <tr><td>B-03</td><td>节点排行合计</td><td>末级节点余额按大类求和 = KPI 卡对应大类总额</td></tr>
+      <tr><td>B-04</td><td>趋势末月对齐</td><td>趋势图末月值 = 所选月份的 KPI 均值（若指标 fallback 链不同，可能存在差异，需确认）</td></tr>
+      <tr><td>B-05</td><td>目标达成自洽</td><td><code>achieved</code> 与完成率同向（GE：完成率 ≥ 100% 即达成）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>10.3 当前基线数据</h3>
+  <table>
+    <thead><tr><th>项</th><th>值</th></tr></thead>
+    <tbody>
+      <tr><td>方案</td><td><code>2026</code> · Run#31</td></tr>
+      <tr><td>基准日 / 预测期</td><td>2025-12-01 / 24 个月</td></tr>
+      <tr><td>节点总数 / 末级节点</td><td>57 / 37</td></tr>
+      <tr><td>资产余额</td><td>111,096.85 亿（基期 101,310.28 亿，+9,786.57 亿）</td></tr>
+      <tr><td>负债余额</td><td>101,801.74 亿（基期 92,833.98 亿，+8,967.76 亿）</td></tr>
+      <tr><td>贷款加权平均利率</td><td>3.89%（基期 3.89%，持平）</td></tr>
+      <tr><td>ROE / CET1 / LCR / NSFR</td><td>12.72% / 10.72% / 148.92% / 107.75%</td></tr>
+      <tr><td>△EVE</td><td>8.05 亿（基期 8.40 亿，−0.35 亿）<strong>—— 超阈值 5 亿</strong></td></tr>
+      <tr><td>目标达成</td><td>ROE 达成（127.20%）、CET1 达成（102.10%）、LCR 未达成（99.28%）、NSFR 未达成（97.95%）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer class="doc">
+  <p>
+    本文档依据 <code>prcp-business/.../reverse/dashboard/ReverseDashboardController.java</code>、
+    <code>ReverseDashboardService.java</code>、<code>ReverseDashboardExportService.java</code>、
+    <code>prcp-vue/src/views/reverse/components/DashboardPanels.vue</code> 及生产库实测数据整理，
+    随代码变更同步修订。文中标注为「风险」的内容为源码审阅发现的口径差异，不代表功能缺陷。
+  </p>
+  <p style="margin-top:8px">编制日期 2026-11-10 · 版本 v1.0 · PRCP-Java 组合反算模块</p>
+</footer>
+
+</div>
+</body>
+</html>
