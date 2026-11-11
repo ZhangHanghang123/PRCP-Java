@@ -857,10 +857,10 @@ EQ:  (1 - |actual - target| / |target|) * 100
   <table>
     <thead><tr><th>项</th><th>内容</th></tr></thead>
     <tbody>
-      <tr><td>端点</td><td><code>GET /reverse-dashboard/balance-export?scheme_code=&amp;run_id=</code></td></tr>
-      <tr><td>参数</td><td>均可选；不传时取<strong>最新方案</strong>与该方案<strong>最新 SUCCESS Run</strong></td></tr>
-      <tr><td>文件名</td><td><code>组合反算结果导出_{scheme_code}_run{run_id}.xlsx</code>（URL 编码，中文文件名）</td></tr>
-      <tr><td>格式</td><td>4 个 Sheet，数值格式 <code>#,##0.00</code></td></tr>
+      <tr><td>端点</td><td><code>GET /reverse-dashboard/balance-export?scheme_code=&amp;run_id=&amp;date_offset=</code></td></tr>
+      <tr><td>参数</td><td>均可选；不传时取<strong>最新方案</strong>与该方案<strong>最新 SUCCESS Run</strong>；<code>date_offset</code> 决定「当前期指标与评分」导出哪一期，缺省取该 Run 最大 offset</td></tr>
+      <tr><td>文件名</td><td><code>组合反算结果导出_{scheme_code}_run{run_id}[_M{date_offset}].xlsx</code>（URL 编码，中文文件名）</td></tr>
+      <tr><td>格式</td><td>5 个 Sheet，数值格式 <code>#,##0.00</code></td></tr>
     </tbody>
   </table>
 
@@ -885,18 +885,36 @@ EQ:  (1 - |actual - target| / |target|) * 100
         <td>列：大类 / 各月金额，末行为「合计」</td>
       </tr>
       <tr>
-        <td>④ 口径说明</td>
-        <td>12 项元信息</td>
+        <td>④ 当前期指标与评分</td>
+        <td>5 个监管指标的当前期值、基期值、变化量、阈值、达标状态、评分与档位</td>
+        <td>列：指标 / 指标编码 / 单位 / 当前期值 / 基期值 / 变化量 / 阈值 /
+            达标状态 / 评分 / 评分档位 / 当前期数据日期<br>
+            达标状态<strong>绿字=达标 / 红字=未达标</strong>；指标为 ROE / CET1 / LCR / NSFR / △EVE</td>
+      </tr>
+      <tr>
+        <td>⑤ 口径说明</td>
+        <td>13 项元信息</td>
         <td>组合方案 / Run ID / 账户册方案 / 基准日 / 预测期 / 月份区间 /
-            节点数 / 有预测值节点数 / 数据来源 / 导出时间 / 余额口径 / 单位说明</td>
+            节点数 / 有预测值节点数 / 数据来源 / 导出时间 / 余额口径 / 单位说明 /
+            当前期指标口径</td>
       </tr>
     </tbody>
   </table>
 
+  <div class="note info">
+    <span class="nt">「当前期指标与评分」的口径（与页面 KPI 卡严格一致）</span>
+    <ul>
+      <li><strong>指标值</strong> —— 该期全部有值节点的<strong>等权平均</strong>（分母 = 该指标有值节点数；<strong>不做末级过滤、不做余额加权</strong>），4 位小数 HALF_UP；与页面 <code>kpi.metric_avg</code> 同源同算法。</li>
+      <li><strong>基期值</strong> —— 取 <code>date_offset=1</code> 对应数据日期，恒为 M1，不随所选月份变化。</li>
+      <li><strong>评分</strong> —— <code>prcp_kpi_value.score</code>（0–500 分制），<strong>绑定基准日</strong>，不随所选月份变化；档位由 <code>prcp_kpi_score_segment</code> 按该指标值命中区间取得。</li>
+      <li><strong>阈值</strong> —— 与页面同一份常量：ROE ≥ 11% / CET1 ≥ 8.5% / LCR ≥ 100% / NSFR ≥ 100% / △EVE |x| ≤ 5 亿。</li>
+    </ul>
+  </div>
+
   <div class="note warn">
     <span class="nt">导出口径与页面的差异（使用前需知悉）</span>
     <ul>
-      <li><strong>节点范围不同</strong>：导出仅覆盖<strong>方案自身关联的那一套账户册</strong>，而页面覆盖全部 COA 方案。</li>
+      <li><strong>节点范围不同</strong>：Sheet ①②③ 仅覆盖<strong>方案自身关联的那一套账户册</strong>，而页面覆盖全部 COA 方案；但 Sheet ④「当前期指标与评分」的指标值<strong>与页面同范围</strong>（全部 COA 的全部节点）。</li>
       <li><strong>余额口径不同</strong>：导出对父节点做<strong>层级上卷</strong>（子树末级之和），页面只取末级节点自身值。</li>
       <li><strong>Sheet ② 的层级行之间存在父子重叠</strong>，跨行相加会重复计数；仅末行「末级合计」是干净口径。</li>
     </ul>
@@ -942,7 +960,7 @@ EQ:  (1 - |actual - target| / |target|) * 100
       <tr><td>10</td><td><span class="lvl lv2">中</span></td><td>导出 Sheet ②</td>
         <td>层级行含父子重叠，跨行相加会重复计数</td>
         <td>报表二次汇总出错风险</td></tr>
-      <tr><td>11</td><td><span class="lvl lv2">中</span></td><td>导出 Sheet ④ 单位说明</td>
+      <tr><td>11</td><td><span class="lvl lv2">中</span></td><td>导出 Sheet ⑤ 单位说明</td>
         <td>称「各层级互不重叠」，与 Sheet ② 实际不符</td>
         <td>文案与实现冲突</td></tr>
       <tr><td>12</td><td><span class="lvl lv2">中</span></td><td>导出文件名</td>
