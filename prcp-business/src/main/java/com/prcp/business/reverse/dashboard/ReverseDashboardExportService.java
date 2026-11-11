@@ -252,6 +252,29 @@ public class ReverseDashboardExportService {
                     : Double.parseDouble(r.get("current_balance").toString());
         }
 
+        // 6a. 数据源回退: 部分引擎 (如 Java 版独立引擎) 产出的 Run 只写了父节点且余额为 0,
+        //     没有末级节点预测值 → 导出会得到一张全 0 的表。
+        //     此时回退到 prcp_data_basic 基准日末级节点余额, 各月取同一基准值。
+        //     口径说明 Sheet 会标注 "已回退基准日", 不静默替换。
+        boolean balanceFallback = false;
+        int leafWithData = 0;
+        for (Map.Entry<String, double[]> e : vals.entrySet()) {
+            if (!isLeaf(e.getKey(), nodePath, parentSet, leafMap)) continue;
+            for (double v : e.getValue()) { if (Math.abs(v) > 1e-6) { leafWithData++; break; } }
+        }
+        if (leafWithData == 0) {
+            Map<String, Double> baseLeaf = loadBaseLeafBalances(baseDate);
+            if (!baseLeaf.isEmpty()) {
+                balanceFallback = true;
+                log.warn("[ReverseDashboardExportService] Run {} 的预测数据无末级节点余额 ({} 个节点), "
+                        + "回退到基准日 {} 的末级节点余额 ({} 个)", runId, vals.size(), baseDate, baseLeaf.size());
+                for (Map.Entry<String, Double> e : baseLeaf.entrySet()) {
+                    double[] arr = vals.computeIfAbsent(e.getKey(), k -> new double[nm]);
+                    for (int i = 0; i < nm; i++) arr[i] = e.getValue();
+                }
+            }
+        }
+
         // 7. roll-up: 末级取自身值, 父节点取子树之和 (自底向上)
         Map<String, double[]> rolled = new LinkedHashMap<>();
         for (Map.Entry<String, double[]> e : vals.entrySet()) {
@@ -457,6 +480,11 @@ public class ReverseDashboardExportService {
             meta.add(new String[]{"单位说明", "与源表一致（1 = 1 元）；各层级互不重叠，末级合计 = 账户册总额"});
             meta.add(new String[]{"当前期指标口径", "「当前期指标与评分」Sheet 的指标值为该期全部有值节点的等权平均"
                     + "（不做末级过滤、不做余额加权）；评分取自 prcp_kpi_value（0-500 分制），绑定基准日"});
+            if (balanceFallback) {
+                meta.add(new String[]{"⚠ 余额数据源回退", "该 Run 的预测数据未产出末级节点余额（仅有父节点且为 0），"
+                        + "Sheet ①②③ 的余额已回退为基准日 " + baseDate + " 的末级节点余额（各月同值），"
+                        + "非反算预测结果，请以引擎补齐末级节点后重新导出为准"});
+            }
             int r5 = 1;
             for (String[] kv : meta) {
                 Row row = ws5.createRow(r5++);
@@ -476,6 +504,29 @@ public class ReverseDashboardExportService {
     }
 
     // ============== 辅助 ==============
+
+    /**
+     * <p>加载基准日末级节点余额 (用于预测数据缺失时的回退)</p>
+     *
+     * <p>数据源: {@code prcp_data_basic} 的基准日 <code>current_balance</code>,
+     * 只取 <code>is_leaf=1</code> 的末级节点。</p>
+     *
+     * @param baseDate 基准日
+     * @return node_code → 余额
+     */
+    private Map<String, Double> loadBaseLeafBalances(String baseDate) {
+        Map<String, Double> out = new LinkedHashMap<>();
+        if (baseDate == null) return out;
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT node_code, current_balance FROM prcp_data_basic"
+              + " WHERE is_deleted = 0 AND data_date = ? AND is_leaf = 1", baseDate);
+        for (Map<String, Object> r : rows) {
+            String nc = str(r.get("node_code"));
+            Double v = dbl(r.get("current_balance"));
+            if (nc != null && v != null) out.put(nc, v);
+        }
+        return out;
+    }
 
     /**
      * <p>加载「当前期指标与评分」数据</p>
