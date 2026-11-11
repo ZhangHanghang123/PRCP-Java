@@ -22,12 +22,14 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -63,6 +65,17 @@ import java.util.concurrent.Executors;
 @Service
 @RequiredArgsConstructor
 public class ReverseService {
+
+    /**
+     * <p>各求解器的标称轮次 (对位 Python 版 reverse_calc_engine.ALGO_ROUNDS)</p>
+     *
+     * <p>用于 /progress 接口在轮次表缺数据时兜底推算总轮次:
+     * CVXPY_QP/LP 一次求解 → 1 轮; HEURISTIC 启发式多轮迭代 → 5 轮。</p>
+     */
+    private static final Map<String, Integer> ALGO_ROUNDS = Map.of(
+            "CVXPY_QP", 1,
+            "CVXPY_LP", 1,
+            "HEURISTIC", 5);
 
     private final ReverseSchemeMapper schemeMapper;
     private final ReverseTargetMapper targetMapper;
@@ -379,7 +392,21 @@ public class ReverseService {
     }
 
     /**
-     * <p>创建 Run 记录 (默认 status='PENDING', progress=0, run_code='RR{timestamp}')</p>
+     * <p>创建 Run 记录 (默认 status='PENDING', progress=0)</p>
+     *
+     * <p><strong>run_code 格式</strong>: {@code R{yyyyMMdd}_{6位大写HEX}}, 例 {@code R20261111_0794AE}
+     * <ul>
+     *   <li>{@code R} — 固定前缀, 标识 Reverse Run</li>
+     *   <li>{@code yyyyMMdd} — <strong>运行创建当天</strong>的服务器本地日期 (非方案数据日期 data_date,
+     *       也非 start_at — 后者在 /start 接口才写入, 跨日时两者可能不同天)</li>
+     *   <li>{@code _} — 分隔符</li>
+     *   <li>{@code 6位大写HEX} — {@link UUID#randomUUID()} 前 6 位十六进制转大写,
+     *       字符集严格为 {@code 0-9A-F}</li>
+     * </ul>
+     * 对位 Python 版 {@code backend/app/routers/reverse.py} 的
+     * {@code f"R{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6].upper()}"}。
+     * 之所以不用纯时间戳 (原 Java 版 {@code RR{millis}}): 毫秒数需人工换算才能读出运行日期,
+     * 且无法在列表页快速识别「今天跑了哪几轮」。</p>
      *
      * @param body 含 scheme_id (必填) + description (可选)
      * @return R.ok(Map.of("id"/"run_code"))
@@ -389,7 +416,7 @@ public class ReverseService {
         Object sid = body.get("scheme_id");
         if (sid == null) throw BizException.badRequest("scheme_id 必填");
         ReverseRun r = new ReverseRun();
-        r.setRunCode("RR" + System.currentTimeMillis());
+        r.setRunCode(generateRunCode());
         r.setSchemeId(((Number) sid).longValue());
         r.setStatus("PENDING");
         r.setProgress(BigDecimal.ZERO);
@@ -402,6 +429,21 @@ public class ReverseService {
         resp.put("id", r.getId());
         resp.put("run_code", r.getRunCode());
         return R.ok(resp);
+    }
+
+    /**
+     * <p>生成运行编码 {@code R{yyyyMMdd}_{6位大写HEX}}</p>
+     *
+     * <p>对位 Python 版 reverse.py 的 create_run。日期取运行创建当天 (服务器本地时区),
+     * 随机段用 UUID4 前 6 位十六进制 (字符集 0-9A-F) —— 依赖 {@code prcp_reverse_run.run_code}
+     * 上的 UNIQUE 索引保证同日多轮不冲突。</p>
+     *
+     * @return 运行编码, 例 {@code R20261111_0794AE}
+     */
+    private String generateRunCode() {
+        String datePart = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        String randPart = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase();
+        return "R" + datePart + "_" + randPart;
     }
 
     /**
@@ -434,17 +476,229 @@ public class ReverseService {
     /**
      * <p>查询 Run 日志 (增量 sinceId, LIMIT 500)</p>
      *
+     * <p>对位 Python 版 {@code GET /reverse/runs/{rid}/logs}。返回结构化字段
+     * {@code stage / roundNo / algo / roundResult}, 供前端渲染「阶段 / 轮次 / 算法」标签
+     * 与逐指标达成度明细。</p>
+     *
      * @param rid     Run ID (必填)
      * @param sinceId 增量起点日志 ID (可选, 默认 0)
-     * @return R.ok(Map.of("items", list))
+     * @param stage   阶段过滤 (可选, 如 SOLVE); null 表示不过滤
+     * @param limit   单次返回条数 (可选, 默认 500, 上限 3000)
+     * @return R.ok(Map.of("items", list, "count", n))
      */
-    public R<Map<String, Object>> runLogs(Long rid, Long sinceId) {
+    public R<Map<String, Object>> runLogs(Long rid, Long sinceId, String stage, Integer limit) {
         if (rid == null) throw BizException.badRequest("id 必填");
-        String sql = "SELECT id, run_id AS runId, log_level AS logLevel, log_message AS logMessage, progress, created_at AS createdAt"
-                   + " FROM prcp_reverse_run_log WHERE run_id=? AND id > ? ORDER BY id ASC LIMIT 500";
         Long since = sinceId == null ? 0L : sinceId;
-        List<Map<String, Object>> items = jdbc.queryForList(sql, rid, since);
-        return R.ok(Collections.singletonMap("items", items));
+        int lim = (limit == null || limit <= 0) ? 500 : Math.min(limit, 3000);
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, run_id AS runId, log_level AS logLevel, log_message AS logMessage, progress,"
+              + " stage, round_no AS roundNo, algo, round_result AS roundResult, created_at AS createdAt"
+              + " FROM prcp_reverse_run_log WHERE run_id=? AND id > ?");
+        List<Object> params = new ArrayList<>();
+        params.add(rid);
+        params.add(since);
+        if (stage != null && !stage.isEmpty()) {
+            sql.append(" AND stage = ?");
+            params.add(stage);
+        }
+        sql.append(" ORDER BY id ASC LIMIT ?");
+        params.add(lim);
+        List<Map<String, Object>> items = jdbc.queryForList(sql.toString(), params.toArray());
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("items", items);
+        resp.put("count", items.size());
+        return R.ok(resp);
+    }
+
+    /**
+     * <p>运行进度 — 对位 Python 版 {@code GET /reverse/runs/{rid}/progress}</p>
+     *
+     * <p>一次请求返回前端状态条所需的全部信息: 状态三态 + 进度百分比 + 当前阶段/轮次
+     * + 轮次清单 + 耗时预估 + 日志条数。</p>
+     *
+     * <p><strong>关键计算口径</strong>:</p>
+     * <ul>
+     *   <li>{@code done} — status ∈ (SUCCESS, FAILED, CANCELLED)</li>
+     *   <li>{@code percent} — max(run.progress, 最新日志.progress); run 表在运行中不更新进度,
+     *       必须用日志进度兜底</li>
+     *   <li>{@code stage / roundNo / algo} — 取<b>最后一条日志</b> (ORDER BY id DESC LIMIT 1)</li>
+     *   <li>{@code currentRoundNo} — 优先取 status='RUNNING' 的轮次, 否则取最后一轮,
+     *       都没有则回退到日志的 round_no</li>
+     *   <li>{@code totalRounds} — 轮次表 total_rounds → 轮次表 max → 引擎常量兜底</li>
+     *   <li>{@code roundsCompleted} — 轮次表中 status='SUCCESS' 的计数</li>
+     *   <li>{@code elapsedSec} — 运行中 = now − start_at; 已结束用 duration_sec</li>
+     *   <li>{@code etaTotalSec} — 优先取最后一轮的 eta_total_sec; 否则按 elapsed/(percent/100) 线性外推</li>
+     * </ul>
+     *
+     * @param rid Run ID (必填)
+     * @return R.ok(进度契约 Map)
+     */
+    public R<Map<String, Object>> runProgress(Long rid) {
+        if (rid == null) throw BizException.badRequest("id 必填");
+        List<Map<String, Object>> runRows = jdbc.queryForList(
+                "SELECT r.id, r.run_code AS runCode, r.status, r.progress, r.start_at AS startAt,"
+              + " r.end_at AS endAt, r.duration_sec AS durationSec, r.optimal_value AS optimalValue,"
+              + " r.metrics, r.error_message AS errorMessage,"
+              + " s.scheme_code AS schemeCode, s.scheme_name AS schemeName, s.algorithm"
+              + " FROM prcp_reverse_run r JOIN prcp_reverse_scheme s ON s.id = r.scheme_id"
+              + " WHERE r.id = ? AND r.is_deleted = 0", rid);
+        if (runRows.isEmpty()) throw BizException.notFound("反算不存在");
+        Map<String, Object> run = runRows.get(0);
+
+        String status = String.valueOf(run.getOrDefault("status", "PENDING")).toUpperCase();
+        boolean done = "SUCCESS".equals(status) || "FAILED".equals(status) || "CANCELLED".equals(status);
+
+        // 最后一条日志 → 当前阶段 / 轮次 / 算法 / 日志进度
+        List<Map<String, Object>> curRows = jdbc.queryForList(
+                "SELECT stage, round_no AS roundNo, algo, progress FROM prcp_reverse_run_log"
+              + " WHERE run_id=? ORDER BY id DESC LIMIT 1", rid);
+        Map<String, Object> cur = curRows.isEmpty() ? null : curRows.get(0);
+
+        // 轮次清单
+        List<Map<String, Object>> roundItems = new ArrayList<>();
+        try {
+            roundItems = jdbc.queryForList(
+                    "SELECT round_no AS roundNo, algo, stage, status, progress, score,"
+                  + " optimal_value AS optimalValue, target_hit AS targetHit, message,"
+                  + " duration_sec AS durationSec, total_rounds AS totalRounds,"
+                  + " eta_total_sec AS etaTotalSec, score_details AS scoreDetails,"
+                  + " started_at AS startedAt, ended_at AS endedAt"
+                  + " FROM prcp_reverse_run_round WHERE run_id=? AND is_deleted=0"
+                  + " ORDER BY round_no ASC, id ASC", rid);
+        } catch (Exception e) {
+            // 轮次表未迁移时降级: 不阻塞进度接口
+            log.warn("[ReverseService] 轮次表不可用 runId={}, 降级为空清单: {}", rid, e.getMessage());
+            roundItems = new ArrayList<>();
+        }
+
+        // 当前轮次: 优先 RUNNING, 否则最后一轮
+        Map<String, Object> curRound = null;
+        for (Map<String, Object> r : roundItems) {
+            if ("RUNNING".equals(String.valueOf(r.get("status")))) { curRound = r; break; }
+        }
+        if (curRound == null && !roundItems.isEmpty()) curRound = roundItems.get(roundItems.size() - 1);
+        Integer curRoundNo = curRound == null ? null : toInt(curRound.get("roundNo"));
+        if (curRoundNo == null && cur != null) curRoundNo = toInt(cur.get("roundNo"));
+
+        // 总轮次: 轮次表 → 引擎常量兜底
+        Integer totalRounds = null;
+        if (curRound != null && curRound.get("totalRounds") != null) {
+            totalRounds = toInt(curRound.get("totalRounds"));
+        } else if (!roundItems.isEmpty()) {
+            int mx = 0;
+            for (Map<String, Object> r : roundItems) {
+                int v = toInt(r.get("totalRounds"));
+                if (v > mx) mx = v;
+            }
+            totalRounds = mx > 0 ? mx : null;
+        }
+        if (totalRounds == null || totalRounds == 0) {
+            String algo = cur != null && cur.get("algo") != null
+                    ? String.valueOf(cur.get("algo"))
+                    : String.valueOf(run.getOrDefault("algorithm", ""));
+            totalRounds = ALGO_ROUNDS.getOrDefault(algo, 1);
+        }
+        int roundsRemaining = Math.max(0, totalRounds - (curRoundNo == null ? 0 : curRoundNo));
+        int roundsCompleted = 0;
+        for (Map<String, Object> r : roundItems) {
+            if ("SUCCESS".equals(String.valueOf(r.get("status")))) roundsCompleted++;
+        }
+
+        // 进度: run 表进度与最新日志进度取大 (run 表运行中不更新)
+        double percent = toDouble(run.get("progress"));
+        if (cur != null && cur.get("progress") != null) {
+            percent = Math.max(percent, toDouble(cur.get("progress")));
+        }
+
+        // 耗时
+        int elapsedSec = 0;
+        Object startAt = run.get("startAt");
+        if (startAt instanceof java.sql.Timestamp) {
+            long diff = System.currentTimeMillis() - ((java.sql.Timestamp) startAt).getTime();
+            elapsedSec = (int) Math.max(0, diff / 1000);
+        }
+        if (done) {
+            Integer dur = toInt(run.get("durationSec"));
+            elapsedSec = dur == null ? elapsedSec : dur;
+        }
+
+        // 预计总耗时: 优先最后一轮的 eta_total_sec, 否则按进度线性外推
+        Integer etaTotalSec = null;
+        for (int i = roundItems.size() - 1; i >= 0; i--) {
+            Integer v = toInt(roundItems.get(i).get("etaTotalSec"));
+            if (v != null && v > 0) { etaTotalSec = v; break; }
+        }
+        if (etaTotalSec == null && percent > 0 && elapsedSec > 0) {
+            etaTotalSec = (int) (elapsedSec / (percent / 100.0));
+        }
+        Integer etaRemainingSec = etaTotalSec == null ? null : Math.max(0, etaTotalSec - elapsedSec);
+
+        // 日志条数
+        Integer histCount = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM prcp_reverse_run_log WHERE run_id=?", Integer.class, rid);
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("runId", run.get("id"));
+        resp.put("runCode", run.get("runCode"));
+        resp.put("status", status);
+        resp.put("done", done);
+        resp.put("success", "SUCCESS".equals(status));
+        resp.put("cancelled", "CANCELLED".equals(status));
+        resp.put("failed", "FAILED".equals(status));
+        resp.put("percent", percent);
+        resp.put("stage", cur == null ? null : cur.get("stage"));
+        resp.put("roundNo", curRoundNo);
+        resp.put("totalRounds", totalRounds);
+        resp.put("roundsRemaining", roundsRemaining);
+        resp.put("roundsCompleted", roundsCompleted);
+        resp.put("elapsedSec", elapsedSec);
+        resp.put("etaTotalSec", etaTotalSec);
+        resp.put("etaRemainingSec", etaRemainingSec);
+        resp.put("algo", cur != null && cur.get("algo") != null ? cur.get("algo") : run.get("algorithm"));
+        resp.put("pollIntervalMs", 2000);
+        resp.put("historyCount", histCount == null ? 0 : histCount);
+        resp.put("rounds", roundItems);
+        resp.put("startAt", run.get("startAt"));
+        resp.put("endAt", run.get("endAt"));
+        resp.put("durationSec", run.get("durationSec"));
+        resp.put("optimalValue", run.get("optimalValue"));
+        resp.put("metrics", run.get("metrics"));
+        resp.put("errorMessage", run.get("errorMessage"));
+        resp.put("schemeCode", run.get("schemeCode"));
+        resp.put("schemeName", run.get("schemeName"));
+        return R.ok(resp);
+    }
+
+    /**
+     * <p>整数转换 (null / 非数字 → null)</p>
+     *
+     * @param v 原始值
+     * @return 整数值或 null
+     */
+    private Integer toInt(Object v) {
+        if (v == null) return null;
+        if (v instanceof Number) return ((Number) v).intValue();
+        try {
+            return Integer.valueOf(String.valueOf(v).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * <p>浮点转换 (null / 非数字 → 0)</p>
+     *
+     * @param v 原始值
+     * @return 浮点值
+     */
+    private double toDouble(Object v) {
+        if (v == null) return 0d;
+        if (v instanceof Number) return ((Number) v).doubleValue();
+        try {
+            return Double.parseDouble(String.valueOf(v).trim());
+        } catch (NumberFormatException e) {
+            return 0d;
+        }
     }
 
     /**

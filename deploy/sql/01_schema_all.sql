@@ -959,10 +959,43 @@ CREATE TABLE `prcp_reverse_run_log` (
   `log_level` varchar(16) DEFAULT 'INFO',
   `log_message` text NOT NULL,
   `progress` decimal(5,2) DEFAULT NULL,
+  `stage` varchar(24) DEFAULT NULL COMMENT '阶段：SUBMIT/LOAD_TARGET/LOAD_BALANCE/SOLVE/SAVE_RESULT/DONE/FAILED',
+  `round_no` int DEFAULT NULL COMMENT '轮次序号，1 起；单轮算法恒为 1',
+  `algo` varchar(24) DEFAULT NULL COMMENT '算法/引擎标识：CVXPY_QP/CVXPY_LP/HEURISTIC/ACOR/DE/SLSQP/DL',
+  `round_result` json DEFAULT NULL COMMENT '该轮关键结果快照：score/optimal_value/target_hit/metrics',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `idx_run_time` (`run_id`,`created_at`)
+  KEY `idx_run_time` (`run_id`,`created_at`),
+  KEY `idx_run_stage` (`run_id`,`stage`,`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=80 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='反算日志';
+
+CREATE TABLE `prcp_reverse_run_round` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `run_id` bigint NOT NULL COMMENT '运行记录 id',
+  `round_no` int NOT NULL COMMENT '轮次序号，1 起',
+  `algo` varchar(24) NOT NULL COMMENT '算法/引擎标识',
+  `stage` varchar(24) DEFAULT NULL COMMENT '该轮所处阶段',
+  `status` varchar(16) NOT NULL DEFAULT 'RUNNING' COMMENT 'RUNNING/SUCCESS/FAILED',
+  `progress` decimal(5,2) DEFAULT '0.00' COMMENT '该轮进度 %',
+  `score` decimal(10,2) DEFAULT NULL COMMENT '该轮综合评分（0~500）',
+  `optimal_value` decimal(20,6) DEFAULT NULL COMMENT '该轮最优目标函数值',
+  `target_hit` tinyint(1) DEFAULT NULL COMMENT '是否全部目标达成：1 是 0 否',
+  `message` varchar(500) DEFAULT NULL COMMENT '该轮结论摘要',
+  `metrics` json DEFAULT NULL COMMENT '该轮指标实测值快照',
+  `started_at` datetime DEFAULT NULL,
+  `ended_at` datetime DEFAULT NULL,
+  `duration_sec` int DEFAULT NULL,
+  `total_rounds` int DEFAULT NULL COMMENT '引擎标称总轮次',
+  `eta_total_sec` int DEFAULT NULL COMMENT '预计总耗时（秒）',
+  `score_details` json DEFAULT NULL COMMENT '逐指标评分明细',
+  `is_deleted` tinyint(1) NOT NULL DEFAULT '0',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_run_round_algo` (`run_id`,`round_no`,`algo`),
+  KEY `idx_run` (`run_id`),
+  KEY `idx_run_status` (`run_id`,`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='组合反算运行轮次记录（每轮状态与结果）';
 
 CREATE TABLE `prcp_reverse_scheme` (
   `id` bigint NOT NULL AUTO_INCREMENT,

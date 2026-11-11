@@ -381,18 +381,50 @@ public class ReverseController {
      * GET /reverse/runs/{rid}/logs
      * Path: rid (Long, required) - 运行 ID
      * Query: since_id (Long, optional) - 增量起点 (上次最大 ID)
+     *        stage   (String, optional) - 阶段过滤 (SOLVE/LOAD_TARGET/...)
+     *        limit   (Integer, optional) - 单次条数 (默认 500, 上限 3000)
      *
-     * Response: R.ok({lines: [{id, ts, level, msg}], cursor})
+     * Response: R.ok({items: [{id, logLevel, logMessage, progress, stage, roundNo, algo, roundResult, createdAt}], count})
      * </pre>
      *
      * @param rid     运行 ID
      * @param since_id 增量起点 (可选)
-     * @return R.ok({lines, cursor})
+     * @param stage   阶段过滤 (可选)
+     * @param limit   单次返回条数 (可选)
+     * @return R.ok({items, count})
      */
     @GetMapping("/runs/{rid}/logs")
     public R<Map<String, Object>> runLogs(@PathVariable Long rid,
-                                           @RequestParam(required = false) Long since_id) {
-        return svc.runLogs(rid, since_id);
+                                           @RequestParam(required = false) Long since_id,
+                                           @RequestParam(required = false) String stage,
+                                           @RequestParam(required = false) Integer limit) {
+        return svc.runLogs(rid, since_id, stage, limit);
+    }
+
+    /**
+     * <p>运行进度 (对位 Python 版 GET /reverse/runs/{rid}/progress)</p>
+     *
+     * <p>一次请求返回前端状态条所需的全部信息, 供 2 秒轮询使用。</p>
+     *
+     * <pre>
+     * GET /reverse/runs/{rid}/progress
+     * Path: rid (Long, required) - 运行 ID
+     *
+     * Response: R.ok({
+     *   status, done, success, cancelled, failed, percent,
+     *   stage, roundNo, totalRounds, roundsRemaining, roundsCompleted,
+     *   elapsedSec, etaTotalSec, etaRemainingSec, algo,
+     *   pollIntervalMs, historyCount, rounds[],
+     *   schemeCode, schemeName, errorMessage, ...
+     * })
+     * </pre>
+     *
+     * @param rid 运行 ID
+     * @return R.ok(进度契约)
+     */
+    @GetMapping("/runs/{rid}/progress")
+    public R<Map<String, Object>> runProgress(@PathVariable Long rid) {
+        return svc.runProgress(rid);
     }
 
     /**

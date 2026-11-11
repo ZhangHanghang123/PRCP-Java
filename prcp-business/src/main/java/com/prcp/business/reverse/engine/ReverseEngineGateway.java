@@ -469,16 +469,30 @@ public class ReverseEngineGateway {
 
     /**
      * <p>查 Run 主表取 run_code</p>
+     *
+     * <p>查不到时兜底生成 {@code R{yyyyMMdd}_{6位大写HEX}} 格式 (与 createRun 一致),
+     * 保证回传给引擎的 run_code 始终符合统一格式。</p>
      */
     private String lookupRunCode(Long runId) {
         try {
             List<Map<String, Object>> rows = jdbc.queryForList(
                     "SELECT run_code FROM prcp_reverse_run WHERE id = ?", runId);
-            return rows.isEmpty() ? "RR" + runId : (String) rows.get(0).get("run_code");
+            return rows.isEmpty() ? fallbackRunCode() : (String) rows.get(0).get("run_code");
         } catch (Exception e) {
-            log.warn("[ReverseEngineGateway] 查 run_code 失败 runId={}, 使用 RR{runId}", runId, e);
-            return "RR" + runId;
+            log.warn("[ReverseEngineGateway] 查 run_code 失败 runId={}, 使用兜底编码", runId, e);
+            return fallbackRunCode();
         }
+    }
+
+    /**
+     * <p>兜底运行编码 (查库失败时用)</p>
+     *
+     * @return {@code R{yyyyMMdd}_{6位大写HEX}}
+     */
+    private String fallbackRunCode() {
+        String datePart = java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE);
+        String randPart = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase();
+        return "R" + datePart + "_" + randPart;
     }
 
     /**
