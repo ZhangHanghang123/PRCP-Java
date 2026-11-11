@@ -8,21 +8,46 @@
 -- ==========================================================
 
 -- ---------- 1. 日志表扩展结构化字段 ----------
+-- 说明: MySQL 8.0 不支持 "ADD COLUMN IF NOT EXISTS", 故用存储过程包装做幂等判断。
+--       直接重复执行 ALTER 会报 ERROR 1060 (Duplicate column name), 用下面这套可安全重跑。
+
+DROP PROCEDURE IF EXISTS prcp_add_col;
+DELIMITER $$
+CREATE PROCEDURE prcp_add_col(IN p_table VARCHAR(64), IN p_col VARCHAR(64), IN p_def TEXT)
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = p_table AND column_name = p_col
+  ) THEN
+    SET @ddl = CONCAT('ALTER TABLE `', p_table, '` ADD COLUMN `', p_col, '` ', p_def);
+    PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+  END IF;
+END$$
+DELIMITER ;
+
 -- 阶段：SUBMIT/LOAD_TARGET/LOAD_BALANCE/SOLVE/SAVE_RESULT/DONE/FAILED
-ALTER TABLE `prcp_reverse_run_log` ADD COLUMN `stage` VARCHAR(24) NULL
-  COMMENT '阶段：SUBMIT/LOAD_TARGET/LOAD_BALANCE/SOLVE/SAVE_RESULT/DONE/FAILED';
+CALL prcp_add_col('prcp_reverse_run_log', 'stage',
+  'VARCHAR(24) NULL COMMENT ''阶段：SUBMIT/LOAD_TARGET/LOAD_BALANCE/SOLVE/SAVE_RESULT/DONE/FAILED''');
 -- 轮次序号，1 起；单轮算法恒为 1
-ALTER TABLE `prcp_reverse_run_log` ADD COLUMN `round_no` INT NULL
-  COMMENT '轮次序号，1 起；单轮算法恒为 1';
+CALL prcp_add_col('prcp_reverse_run_log', 'round_no',
+  'INT NULL COMMENT ''轮次序号，1 起；单轮算法恒为 1''');
 -- 算法/引擎标识：CVXPY_QP/CVXPY_LP/HEURISTIC/ACOR/DE/SLSQP/DL
-ALTER TABLE `prcp_reverse_run_log` ADD COLUMN `algo` VARCHAR(24) NULL
-  COMMENT '算法/引擎标识：CVXPY_QP/CVXPY_LP/HEURISTIC/ACOR/DE/SLSQP/DL';
+CALL prcp_add_col('prcp_reverse_run_log', 'algo',
+  'VARCHAR(24) NULL COMMENT ''算法/引擎标识：CVXPY_QP/CVXPY_LP/HEURISTIC/ACOR/DE/SLSQP/DL''');
 -- 该轮关键结果快照：score/optimal_value/target_hit/metrics
-ALTER TABLE `prcp_reverse_run_log` ADD COLUMN `round_result` JSON NULL
-  COMMENT '该轮关键结果快照：score/optimal_value/target_hit/metrics';
+CALL prcp_add_col('prcp_reverse_run_log', 'round_result',
+  'JSON NULL COMMENT ''该轮关键结果快照：score/optimal_value/target_hit/metrics''');
+
+DROP PROCEDURE IF EXISTS prcp_add_col;
 
 -- 阶段过滤索引（配合 GET /reverse/runs/{id}/logs?stage=xxx）
-ALTER TABLE `prcp_reverse_run_log` ADD INDEX `idx_run_stage` (`run_id`, `stage`, `id`);
+SET @idx_exists = (
+  SELECT COUNT(*) FROM information_schema.statistics
+  WHERE table_schema = DATABASE() AND table_name = 'prcp_reverse_run_log' AND index_name = 'idx_run_stage'
+);
+SET @ddl = IF(@idx_exists > 0, 'SELECT 1',
+  'ALTER TABLE `prcp_reverse_run_log` ADD INDEX `idx_run_stage` (`run_id`, `stage`, `id`)');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ---------- 2. 轮次记录表 ----------
 CREATE TABLE IF NOT EXISTS `prcp_reverse_run_round` (
