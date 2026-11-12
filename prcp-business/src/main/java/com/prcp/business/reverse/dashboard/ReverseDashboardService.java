@@ -303,6 +303,56 @@ public class ReverseDashboardService {
             revMap.put(nc, m);
         }
 
+        // 5a. 末级节点余额回退（数据源缺失兜底）
+        //  ⚠ 部分引擎（如 Java 版独立引擎 8009）产出的 Run 只写了父节点且余额全 0，
+        //    prcp_data_reverse 里根本没有末级节点 → 节点矩阵 / KPI 卡资产余额 /
+        //    大类预测分布 全部为 0。此处把末级节点用基准日余额补进 revMap，
+        //    保证页面各处口径一致（与 balance-trend / 导出的回退口径一致）。
+        boolean leafBalanceFallback = false;
+        int revLeafWithData = 0;
+        for (Map.Entry<String, Map<String, Object>> e : revMap.entrySet()) {
+            if (!isLeafFlag(e.getKey(), null, parentSet, basicMap)) continue;
+            BigDecimal cb = (BigDecimal) e.getValue().getOrDefault("current_balance", BigDecimal.ZERO);
+            if (cb != null && cb.abs().compareTo(BigDecimal.ZERO) > 0) revLeafWithData++;
+        }
+        if (revLeafWithData == 0 && !basicMap.isEmpty()) {
+            for (Map<String, Object> n : nodes) {
+                String nc = (String) n.get("node_code");
+                if (!isLeafFlag(nc, (String) n.get("path"), parentSet, basicMap)) continue;
+                Map<String, Object> b = basicMap.get(nc);
+                if (b == null) continue;
+                BigDecimal bb = (BigDecimal) b.getOrDefault("base_balance", BigDecimal.ZERO);
+                if (bb == null || bb.signum() == 0) continue;
+                Map<String, Object> m = revMap.get(nc);
+                if (m == null) {
+                    // 该末级节点在预测数据里完全没有 → 新建一条
+                    m = new LinkedHashMap<>();
+                    m.put("coa_node_id", n.get("id"));
+                    m.put("avg_balance", bb);
+                    // 回退节点: 引擎未产出利率 → 置 null (表示无数据), 不填 0 冒充真实利率
+                    m.put("weighted_rate", null);
+                    m.put("interest_amount", BigDecimal.ZERO);
+                    m.put("risk_weight", BigDecimal.ZERO);
+                    revMap.put(nc, m);
+                }
+                // ⚠ 已在 revMap 但余额为 0（如权益类唯一节点 S030000000000，
+                //   引擎写了父节点行但余额为 0）→ 同样要用基准日回退，否则恒为 0
+                BigDecimal cur = (BigDecimal) m.getOrDefault("current_balance", BigDecimal.ZERO);
+                if (cur == null || cur.signum() == 0) {
+                    m.put("current_balance", bb);
+                    m.put("balance_fallback", Boolean.TRUE);
+                    // 该节点余额由基准日回退而来, 引擎未产出对应利率 → 置 null, 不填 0
+                    BigDecimal mRate = (BigDecimal) m.getOrDefault("weighted_rate", BigDecimal.ZERO);
+                    if (mRate == null || mRate.signum() == 0) m.put("weighted_rate", null);
+                    leafBalanceFallback = true;
+                }
+            }
+            if (leafBalanceFallback) {
+                log.warn("[ReverseDashboardService] Run {} 的预测数据无末级节点余额, 已用基准日 {} 余额回退补齐 ({} 个节点)",
+                        runId, baseDate, revMap.size());
+            }
+        }
+
         // 6. 当前月份的 5 个指标
         Map<String, Map<String, BigDecimal>> metricMap = new LinkedHashMap<>();
         if (!nodes.isEmpty()) {
@@ -364,10 +414,10 @@ public class ReverseDashboardService {
         // 7. KPI 聚合
         int totalNodes = nodes.size();
         long withMetrics = nodes.stream().filter(n -> metricMap.containsKey(n.get("node_code"))).count();
-        BigDecimal assetTotal = sumByCat(nodes, revMap, "ASSET");
-        BigDecimal liabilityTotal = sumByCat(nodes, revMap, "LIABILITY");
-        BigDecimal equityTotal = sumByCat(nodes, revMap, "EQUITY");
-        BigDecimal offBalance = sumByCat(nodes, revMap, "OFF_BALANCE");
+        BigDecimal assetTotal = sumByCat(nodes, revMap, "ASSET", basicMap);
+        BigDecimal liabilityTotal = sumByCat(nodes, revMap, "LIABILITY", basicMap);
+        BigDecimal equityTotal = sumByCat(nodes, revMap, "EQUITY", basicMap);
+        BigDecimal offBalance = sumByCat(nodes, revMap, "OFF_BALANCE", basicMap);
 
         Map<String, Object> metricAvg = new LinkedHashMap<>();
         Map<String, Object> metricMax = new LinkedHashMap<>();
@@ -394,6 +444,8 @@ public class ReverseDashboardService {
         BigDecimal loanNum = BigDecimal.ZERO;
         BigDecimal loanDen = BigDecimal.ZERO;
         BigDecimal loanWeightedRate = null;
+        int loanRateNodes = 0;          // 参与计算且有有效利率的节点数
+        int loanBalNodes = 0;           // 参与计算的节点数（余额有效）
         for (Map<String, Object> n : nodes) {
             String nc = (String) n.get("node_code");
             if (!(nc != null && (nc.startsWith("S01010101") || nc.startsWith("S01010102")
@@ -404,10 +456,17 @@ public class ReverseDashboardService {
             BigDecimal bal = (BigDecimal) r.getOrDefault("current_balance", BigDecimal.ZERO);
             BigDecimal rate = (BigDecimal) r.getOrDefault("weighted_rate", BigDecimal.ZERO);
             if (bal == null || bal.abs().compareTo(new BigDecimal("0.01")) < 0) continue;
+            loanBalNodes++;
+            // ⚠ 利率为 0 且该节点是基准日回退来的（引擎未产出利率）→ 不参与加权，
+            //    否则会算出 0.00% 冒充真实利率。
+            if (rate == null || rate.signum() == 0) continue;
+            loanRateNodes++;
             loanNum = loanNum.add(bal.multiply(rate));
             loanDen = loanDen.add(bal);
         }
-        if (loanDen.compareTo(BigDecimal.ZERO) > 0) {
+        // 只有在「有余额的节点」与「有利率的节点」数量一致时才输出加权平均；
+        // 否则说明引擎未产出利率数据 → 返回 null，前端显示「无数据」而非 0.00%
+        if (loanDen.compareTo(BigDecimal.ZERO) > 0 && loanBalNodes > 0 && loanRateNodes == loanBalNodes) {
             loanWeightedRate = loanNum.divide(loanDen, 6, RoundingMode.HALF_UP);
         }
 
@@ -560,6 +619,9 @@ public class ReverseDashboardService {
             categoryDistribution.put("balance_source", "prcp_data_basic");
 
             // 9a. 当月预测大类分布 (prcp_data_reverse, 仅末级节点) — 余额口径切换用
+            //  ⚠ 数据源回退: 部分引擎 (如 Java 版独立引擎) 产出的 Run 只写父节点且余额为 0,
+            //    末级节点在 prcp_data_reverse 中不存在 → 预测口径分布会全为 0。
+            //    此时末级节点余额回退到 prcp_data_basic 基准日 (与 balance-trend / 导出口径一致)。
             Map<String, BigDecimal> catDistForecast = new LinkedHashMap<>();
             for (String c : CATEGORIES) catDistForecast.put(c, BigDecimal.ZERO);
             for (Map<String, Object> n : nodes) {
@@ -569,6 +631,14 @@ public class ReverseDashboardService {
                 BigDecimal bal = revMap.containsKey(nc)
                         ? (BigDecimal) revMap.get(nc).getOrDefault("current_balance", BigDecimal.ZERO)
                         : BigDecimal.ZERO;
+                if (bal == null || bal.signum() == 0) {
+                    // 预测余额缺失 → 回退基准日末级余额
+                    Map<String, Object> b = basicMap.get(nc);
+                    if (b != null) {
+                        BigDecimal bb = (BigDecimal) b.getOrDefault("base_balance", BigDecimal.ZERO);
+                        if (bb != null && bb.signum() != 0) bal = bb;
+                    }
+                }
                 catDistForecast.merge(cat, bal, BigDecimal::add);
             }
             Map<String, Object> byBalForecast = new LinkedHashMap<>();
@@ -707,7 +777,7 @@ public class ReverseDashboardService {
                     revId, schemeCode, runId, nodes, metricMap, m12Date);
 
             // 12c. 基期 KPI（date_offset=1）— 用于 KPI 卡的基期对比
-            Map<String, Object> kpiBase = buildKpiBase(schemeCode, runId, nodes);
+            Map<String, Object> kpiBase = buildKpiBase(schemeCode, runId, nodes, baseDate);
 
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("scheme_code", schemeCode);
@@ -833,6 +903,22 @@ public class ReverseDashboardService {
                     .put((String) r.get("node_code"), toBD(r.get("current_balance")));
         }
 
+        // 4a. 该 Run 完全无月度数据（如引擎只写了少量节点或未产出预测）→
+        //     按方案预测期生成 M1..Mn 月份序列, 余额走基准日回退,
+        //     否则走势图为空、X 轴无刻度, 用户看到的是一张空图。
+        if (monthDate.isEmpty()) {
+            int horizon = rev.get("horizonMonths") == null ? 24
+                    : ((Number) rev.get("horizonMonths")).intValue();
+            if (horizon <= 0) horizon = 24;
+            java.time.LocalDate base = rev.get("dataDate") == null ? java.time.LocalDate.now()
+                    : java.time.LocalDate.parse(String.valueOf(rev.get("dataDate")).substring(0, 10));
+            for (int off = 1; off <= horizon; off++) {
+                monthDate.put(off, base.plusMonths(off).toString());
+            }
+            log.warn("[ReverseDashboardService] Run {} 无月度预测数据, 生成 {} 个月份序列并回退基准日余额",
+                    runId, horizon);
+        }
+
         // 5. 组装
         List<Map<String, Object>> months = new ArrayList<>();
         for (Map.Entry<Integer, String> e : monthDate.entrySet()) {
@@ -872,6 +958,36 @@ public class ReverseDashboardService {
         // 月份顺序 (offset 列表, 与各 values 数组的索引一一对应)
         List<Integer> offsets = new ArrayList<>(monthDate.keySet());
 
+        // 5d. 数据源回退：部分引擎（如 Java 版独立引擎）产出的 Run 只写了父节点且余额为 0，
+        //     没有末级节点预测值 → 走势图会是一条贴底的 0 线。
+        //     此时回退到基准日（prcp_data_basic）的末级节点余额，各月取同一基准值。
+        //     响应会带 dataSource=BASE_DATE 供前端提示，不静默替换。
+        //     与导出（ReverseDashboardExportService）的回退口径保持一致。
+        Map<String, BigDecimal> baseLeafBalance = new LinkedHashMap<>();
+        boolean balanceFallback = false;
+        if (!offsets.isEmpty()) {
+            // 统计「有非零余额的末级节点」出现过的月份数
+            int monthsWithLeafData = 0;
+            for (Map.Entry<Integer, Map<String, BigDecimal>> me : monthByNode.entrySet()) {
+                for (Map.Entry<String, BigDecimal> ne : me.getValue().entrySet()) {
+                    if (!isLeaf(ne.getKey(), null, parentSet)) continue;
+                    if (ne.getValue() != null && ne.getValue().abs().compareTo(BigDecimal.ZERO) > 0) {
+                        monthsWithLeafData++;
+                        break;
+                    }
+                }
+            }
+            if (monthsWithLeafData == 0) {
+                baseLeafBalance = loadBaseLeafBalances(rev.get("dataDate"), nodes);
+                if (!baseLeafBalance.isEmpty()) {
+                    balanceFallback = true;
+                    log.warn("[ReverseDashboardService] Run {} 无末级节点预测余额 (有值月份数=0), "
+                            + "回退基准日 {} 的末级节点余额 ({} 个)",
+                            runId, rev.get("dataDate"), baseLeafBalance.size());
+                }
+            }
+        }
+
         for (Map<String, Object> n : nodes) {
             String nc = (String) n.get("node_code");
             boolean leaf = leafFlag.containsKey(nc) ? leafFlag.get(nc)
@@ -880,9 +996,13 @@ public class ReverseDashboardService {
             String cat = classify(nc, (String) n.get("path"));
             List<BigDecimal> vals = new ArrayList<>();
             BigDecimal total = BigDecimal.ZERO;
+            BigDecimal baseVal = baseLeafBalance.get(nc);
             for (Integer off : offsets) {
-                BigDecimal v = monthByNode.getOrDefault(off, Collections.emptyMap())
-                        .getOrDefault(nc, BigDecimal.ZERO);
+                BigDecimal v = monthByNode.getOrDefault(off, Collections.emptyMap()).get(nc);
+                if (v == null || (v.signum() == 0 && baseVal != null)) {
+                    // 该月无末级节点数据 → 用基准日余额回退
+                    v = baseVal != null ? baseVal : BigDecimal.ZERO;
+                }
                 vals.add(v);
                 total = total.add(v.abs());
             }
@@ -934,7 +1054,46 @@ public class ReverseDashboardService {
         resp.put("months", months);
         resp.put("categories", categories);
         resp.put("nodes", nodeList);
+        // 数据来源标记: RUN_PREDICT = 引擎预测值; BASE_DATE = 该 Run 无末级节点预测值, 已回退基准日
+        resp.put("data_source", balanceFallback ? "BASE_DATE" : "RUN_PREDICT");
+        resp.put("data_source_note", balanceFallback
+                ? "该 Run 未产出末级节点预测余额（仅有父节点且为 0），余额已回退为基准日 "
+                  + rev.get("dataDate") + " 的末级节点余额（各月同值），非反算预测结果"
+                : null);
+        resp.put("has_month_data", !monthRows.isEmpty());
         return R.ok(resp);
+    }
+
+    /**
+     * <p>加载基准日末级节点余额（预测数据缺失时的回退源）</p>
+     *
+     * <p>数据源: {@code prcp_data_basic} 基准日的 {@code current_balance}，只取末级节点。
+     * 末级判定优先用 {@code prcp_data_basic.is_leaf}，缺失时回退 path 前缀推断。</p>
+     *
+     * @param baseDate 基准日
+     * @param nodes    全部节点元数据（用于 path 推断末级）
+     * @return node_code → 余额
+     */
+    private Map<String, BigDecimal> loadBaseLeafBalances(Object baseDate, List<Map<String, Object>> nodes) {
+        Map<String, BigDecimal> out = new LinkedHashMap<>();
+        if (baseDate == null || nodes == null || nodes.isEmpty()) return out;
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT node_code, current_balance, is_leaf FROM prcp_data_basic"
+              + " WHERE is_deleted = 0 AND data_date = ?", baseDate);
+        Set<String> parentSet = computeParentSet(nodes);
+        for (Map<String, Object> r : rows) {
+            String nc = (String) r.get("node_code");
+            if (nc == null) continue;
+            Object v = r.get("current_balance");
+            if (v == null) continue;
+            Object lf = r.get("is_leaf");
+            boolean leaf = lf instanceof Boolean ? (Boolean) lf
+                    : (lf instanceof Number ? ((Number) lf).intValue() == 1
+                    : isLeaf(nc, null, parentSet));
+            if (!leaf) continue;
+            out.put(nc, toBD(v));
+        }
+        return out;
     }
 
     /**
@@ -1155,7 +1314,7 @@ public class ReverseDashboardService {
      * @return {period, asset_total, liability_total, equity_total, loan_weighted_rate, metric_avg}
      */
     private Map<String, Object> buildKpiBase(String schemeCode, Long runId,
-                                             List<Map<String, Object>> nodes) {
+                                             List<Map<String, Object>> nodes, String schemeBaseDate) {
         Map<String, Object> base = new LinkedHashMap<>();
         // 基期 data_date
         List<Map<String, Object>> ddRows = jdbc.queryForList(
@@ -1182,12 +1341,77 @@ public class ReverseDashboardService {
             m.put("weighted_rate", toBD(r.get("weighted_rate")));
             revMap.put((String) r.get("node_code"), m);
         }
-        base.put("asset_total", sumByCat(nodes, revMap, "ASSET"));
-        base.put("liability_total", sumByCat(nodes, revMap, "LIABILITY"));
-        base.put("equity_total", sumByCat(nodes, revMap, "EQUITY"));
+        // 基期末级标记 + 基准日余额
+        //  ⚠ 查询两个日期: date_offset=1 的 data_date (如 2025-12-01) 与方案基准日 (如 2025-12-31)
+        //    可能不同 —— prcp_data_basic 的基准日余额存在「方案基准日」那一份，
+        //    只按 date_offset=1 的日期查会查不到，导致回退不生效、基期恒为 0。
+        Map<String, Map<String, Object>> baseBasicMap = new LinkedHashMap<>();
+        if (!nodes.isEmpty()) {
+            String ph = String.join(",", Collections.nCopies(nodes.size(), "?"));
+            Object[] params = new Object[nodes.size() + 1];
+            params[0] = baseDate;
+            int i = 1;
+            for (Map<String, Object> n : nodes) { params[i++] = n.get("node_code"); }
+            List<Map<String, Object>> brows = jdbc.queryForList(
+                    "SELECT node_code, current_balance, is_leaf FROM prcp_data_basic"
+                  + " WHERE is_deleted = 0 AND data_date = ? AND node_code IN (" + ph + ")", params);
+            for (Map<String, Object> r : brows) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("base_balance", toBD(r.get("current_balance")));
+                m.put("is_leaf", r.get("is_leaf"));
+                baseBasicMap.put((String) r.get("node_code"), m);
+            }
+            // 方案基准日兜底 (date_offset=1 日期查不到时用)
+            if (baseBasicMap.isEmpty() && schemeBaseDate != null && !schemeBaseDate.equals(baseDate)) {
+                Object[] p2 = new Object[nodes.size() + 1];
+                p2[0] = schemeBaseDate;
+                int j = 1;
+                for (Map<String, Object> n : nodes) { p2[j++] = n.get("node_code"); }
+                List<Map<String, Object>> brows2 = jdbc.queryForList(
+                        "SELECT node_code, current_balance, is_leaf FROM prcp_data_basic"
+                      + " WHERE is_deleted = 0 AND data_date = ? AND node_code IN (" + ph + ")", p2);
+                for (Map<String, Object> r : brows2) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("base_balance", toBD(r.get("current_balance")));
+                    m.put("is_leaf", r.get("is_leaf"));
+                    baseBasicMap.put((String) r.get("node_code"), m);
+                }
+            }
+        }
+        // 基期余额回退：与当前期同一口径 —— 该 Run 若未产出末级节点预测余额，
+        // 用基准日 (prcp_data_basic) 的末级节点余额补齐, 否则基期三张卡恒为 0。
+        if (!baseBasicMap.isEmpty()) {
+            Set<String> bParents = computeParentSet(nodes);
+            for (Map<String, Object> n : nodes) {
+                String nc = (String) n.get("node_code");
+                if (!isLeafFlag(nc, (String) n.get("path"), bParents, baseBasicMap)) continue;
+                Map<String, Object> b = baseBasicMap.get(nc);
+                if (b == null) continue;
+                BigDecimal bb = (BigDecimal) b.getOrDefault("base_balance", BigDecimal.ZERO);
+                if (bb == null || bb.signum() == 0) continue;
+                Map<String, Object> m = revMap.get(nc);
+                if (m == null) {
+                    m = new LinkedHashMap<>();
+                    // 回退节点: 引擎未产出利率 → 置 null (表示无数据), 不填 0 冒充真实利率
+                    m.put("weighted_rate", null);
+                    revMap.put(nc, m);
+                }
+                BigDecimal cur = (BigDecimal) m.getOrDefault("current_balance", BigDecimal.ZERO);
+                if (cur == null || cur.signum() == 0) {
+                    m.put("current_balance", bb);
+                    // 余额由基准日回退 → 对应利率同样无数据
+                    BigDecimal mRate = (BigDecimal) m.getOrDefault("weighted_rate", BigDecimal.ZERO);
+                    if (mRate == null || mRate.signum() == 0) m.put("weighted_rate", null);
+                }
+            }
+        }
+        base.put("asset_total", sumByCat(nodes, revMap, "ASSET", baseBasicMap));
+        base.put("liability_total", sumByCat(nodes, revMap, "LIABILITY", baseBasicMap));
+        base.put("equity_total", sumByCat(nodes, revMap, "EQUITY", baseBasicMap));
 
-        // 基期贷款利率 (同 7a 口径)
+        // 基期贷款利率 (同 7a 口径: 引擎未产出利率时返回 null, 不冒充 0.00%)
         BigDecimal loanNum = BigDecimal.ZERO, loanDen = BigDecimal.ZERO;
+        int loanRateNodes = 0, loanBalNodes = 0;
         for (Map<String, Object> n : nodes) {
             String nc = (String) n.get("node_code");
             if (nc == null || !(nc.startsWith("S01010101") || nc.startsWith("S01010102")
@@ -1198,10 +1422,14 @@ public class ReverseDashboardService {
             BigDecimal bal = (BigDecimal) r.getOrDefault("current_balance", BigDecimal.ZERO);
             BigDecimal rate = (BigDecimal) r.getOrDefault("weighted_rate", BigDecimal.ZERO);
             if (bal == null || bal.abs().compareTo(new BigDecimal("0.01")) < 0) continue;
+            loanBalNodes++;
+            if (rate == null || rate.signum() == 0) continue;
+            loanRateNodes++;
             loanNum = loanNum.add(bal.multiply(rate));
             loanDen = loanDen.add(bal);
         }
-        base.put("loan_weighted_rate", loanDen.compareTo(BigDecimal.ZERO) > 0
+        base.put("loan_weighted_rate", (loanDen.compareTo(BigDecimal.ZERO) > 0
+                && loanBalNodes > 0 && loanRateNodes == loanBalNodes)
                 ? loanNum.divide(loanDen, 6, RoundingMode.HALF_UP) : null);
 
         // 基期指标均值
@@ -1257,12 +1485,31 @@ public class ReverseDashboardService {
     }
 
     private BigDecimal sumByCat(List<Map<String, Object>> nodes, Map<String, Map<String, Object>> revMap, String cat) {
+        return sumByCat(nodes, revMap, cat, null);
+    }
+
+    /**
+     * <p>按大类汇总余额（仅末级节点）</p>
+     *
+     * @param nodes    全部节点
+     * @param revMap   节点 → 余额数据
+     * @param cat      大类 (ASSET/LIABILITY/EQUITY/OFF_BALANCE/OTHER)
+     * @param basicMap 基础数据（末级标记）；传 null 时按 baseDate 查一次库
+     * @return 余额合计
+     */
+    private BigDecimal sumByCat(List<Map<String, Object>> nodes, Map<String, Map<String, Object>> revMap,
+                                String cat, Map<String, Map<String, Object>> basicMap) {
         BigDecimal sum = BigDecimal.ZERO;
         Set<String> parents = computeParentSet(nodes);
+        Map<String, Map<String, Object>> bm = basicMap != null ? basicMap : Collections.emptyMap();
         for (Map<String, Object> n : nodes) {
             String nc = (String) n.get("node_code");
             if (!cat.equals(classify(nc, (String) n.get("path")))) continue;
-            if (!isLeaf(nc, (String) n.get("path"), parents)) continue;  // 仅叶子节点
+            // 末级判定: 优先 prcp_data_basic.is_leaf (库内权威标记), 缺失时回退 path 前缀推断。
+            //  ⚠ 不能只用 path 推断 —— 权益类只有一个 L1 节点 (S030000000000 所有者权益),
+            //    它在 prcp_data_basic 标了 is_leaf=1, 但 path 推断会因存在子树前缀而判为父节点,
+            //    导致 equity_total 恒为 0。
+            if (!isLeafFlag(nc, (String) n.get("path"), parents, bm)) continue;
             Map<String, Object> r = revMap.get(nc);
             if (r == null) continue;
             BigDecimal bal = (BigDecimal) r.getOrDefault("current_balance", BigDecimal.ZERO);
