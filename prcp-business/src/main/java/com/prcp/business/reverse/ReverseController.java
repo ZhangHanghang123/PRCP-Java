@@ -402,6 +402,32 @@ public class ReverseController {
     }
 
     /**
+     * <p>推算轮次清单 (对位 Python 版 GET /reverse/runs/{rid}/rounds)</p>
+     *
+     * <p>多轮推算时逐轮记录状态与结果; 轮次表未迁移时返回空清单。</p>
+     *
+     * <pre>
+     * GET /reverse/runs/{rid}/rounds
+     * Path: rid (Long, required) - 运行 ID
+     *
+     * Response: R.ok({
+     *   runId, runCode,
+     *   items: [{roundNo, algo, stage, status, progress, score,
+     *            optimalValue, targetHit, message, durationSec,
+     *            totalRounds, etaTotalSec, scoreDetails, startedAt, endedAt}],
+     *   count
+     * })
+     * </pre>
+     *
+     * @param rid 运行 ID
+     * @return R.ok({runId, runCode, items, count})
+     */
+    @GetMapping("/runs/{rid}/rounds")
+    public R<Map<String, Object>> runRounds(@PathVariable Long rid) {
+        return svc.runRounds(rid);
+    }
+
+    /**
      * <p>运行进度 (对位 Python 版 GET /reverse/runs/{rid}/progress)</p>
      *
      * <p>一次请求返回前端状态条所需的全部信息, 供 2 秒轮询使用。</p>

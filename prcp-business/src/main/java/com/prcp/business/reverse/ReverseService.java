@@ -511,6 +511,55 @@ public class ReverseService {
     }
 
     /**
+     * <p>加载 Run 的轮次清单</p>
+     *
+     * <p>数据源: {@code prcp_reverse_run_round}（每轮状态与结果）。
+     * 轮次表未迁移时降级为空清单，不阻塞调用方。</p>
+     *
+     * @param rid Run ID
+     * @return 轮次列表（按 round_no 升序）
+     */
+    private List<Map<String, Object>> loadRunRounds(Long rid) {
+        try {
+            return jdbc.queryForList(
+                    "SELECT round_no AS roundNo, algo, stage, status, progress, score,"
+                  + " optimal_value AS optimalValue, target_hit AS targetHit, message,"
+                  + " duration_sec AS durationSec, total_rounds AS totalRounds,"
+                  + " eta_total_sec AS etaTotalSec, score_details AS scoreDetails,"
+                  + " started_at AS startedAt, ended_at AS endedAt"
+                  + " FROM prcp_reverse_run_round WHERE run_id=? AND is_deleted=0"
+                  + " ORDER BY round_no ASC, id ASC", rid);
+        } catch (Exception e) {
+            // 轮次表未迁移时降级: 不阻塞接口
+            log.warn("[ReverseService] 轮次表不可用 runId={}, 降级为空清单: {}", rid, e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    /**
+     * <p>查询 Run 的推算轮次清单 — 对位 Python 版 {@code GET /reverse/runs/{rid}/rounds}</p>
+     *
+     * <p>每轮含: 轮次序号 / 算法 / 阶段 / 状态 / 进度 / 得分 / 目标函数值 /
+     * 目标是否全部达成 / 结论摘要 / 耗时 / 标称总轮次 / 预计总耗时 /
+     * 逐指标评分明细 (scoreDetails) / 起止时间。</p>
+     *
+     * @param rid Run ID (必填)
+     * @return R.ok({items: list, count: n})
+     */
+    public R<Map<String, Object>> runRounds(Long rid) {
+        if (rid == null) throw BizException.badRequest("id 必填");
+        ReverseRun run = runMapper.selectById(rid);
+        if (run == null) throw BizException.notFound("run 不存在");
+        List<Map<String, Object>> items = loadRunRounds(rid);
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("runId", rid);
+        resp.put("runCode", run.getRunCode());
+        resp.put("items", items);
+        resp.put("count", items.size());
+        return R.ok(resp);
+    }
+
+    /**
      * <p>运行进度 — 对位 Python 版 {@code GET /reverse/runs/{rid}/progress}</p>
      *
      * <p>一次请求返回前端状态条所需的全部信息: 状态三态 + 进度百分比 + 当前阶段/轮次
@@ -555,21 +604,7 @@ public class ReverseService {
         Map<String, Object> cur = curRows.isEmpty() ? null : curRows.get(0);
 
         // 轮次清单
-        List<Map<String, Object>> roundItems = new ArrayList<>();
-        try {
-            roundItems = jdbc.queryForList(
-                    "SELECT round_no AS roundNo, algo, stage, status, progress, score,"
-                  + " optimal_value AS optimalValue, target_hit AS targetHit, message,"
-                  + " duration_sec AS durationSec, total_rounds AS totalRounds,"
-                  + " eta_total_sec AS etaTotalSec, score_details AS scoreDetails,"
-                  + " started_at AS startedAt, ended_at AS endedAt"
-                  + " FROM prcp_reverse_run_round WHERE run_id=? AND is_deleted=0"
-                  + " ORDER BY round_no ASC, id ASC", rid);
-        } catch (Exception e) {
-            // 轮次表未迁移时降级: 不阻塞进度接口
-            log.warn("[ReverseService] 轮次表不可用 runId={}, 降级为空清单: {}", rid, e.getMessage());
-            roundItems = new ArrayList<>();
-        }
+        List<Map<String, Object>> roundItems = loadRunRounds(rid);
 
         // 当前轮次: 优先 RUNNING, 否则最后一轮
         Map<String, Object> curRound = null;
