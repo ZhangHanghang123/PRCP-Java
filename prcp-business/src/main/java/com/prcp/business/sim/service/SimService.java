@@ -466,7 +466,7 @@ public class SimService {
             ? BigDecimal.ZERO : new BigDecimal(body.get("annual_growth_rate").toString());
         String termUnit = body.get("term_unit") == null ? "MONTH" : body.get("term_unit").toString();
         String remark = body.get("remark") == null ? null : body.get("remark").toString();
-        // 🆕 v2.1: 是否模型测算 (1=是 2=否) + 节奏配置类型 (1=线性 2=自定义)
+        // 🆕 v2.1: 新业务增长方式 (1=模型决策 2=存量求解) + 节奏配置类型 (1=线性 2=自定义)
         int isModelCalc = intOf(body.get("is_model_calc"), 2);
         int rhythmType = intOf(body.get("rhythm_type"), 1);
 

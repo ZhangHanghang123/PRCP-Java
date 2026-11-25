@@ -829,7 +829,7 @@ CREATE TABLE `prcp_sim_node_config` (
   `updated_by` bigint DEFAULT NULL,
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `is_model_calc` tinyint(1) NOT NULL DEFAULT '2' COMMENT '是否模型测算 (1=是, 2=否)',
+  `is_model_calc` tinyint(1) NOT NULL DEFAULT '2' COMMENT '新业务增长方式 (1=模型决策, 2=存量求解)',
   `rhythm_type` tinyint(1) NOT NULL DEFAULT '1' COMMENT '节奏配置类型 (1=线性, 2=自定义)',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_scheme_node` (`scheme_id`,`coa_node_id`,`is_deleted`) COMMENT '软删除 + UNIQUE 复活',

@@ -161,7 +161,7 @@ public class NewBusinessEngine extends EngineBase {
         String nodeName;
         Integer nodeLevel;
         String category;
-        /** v2.1: 是否模型测算 (is_model_calc=1) —— 与「有无配置」共同决定分支 */
+        /** v2.1: 新业务增长方式 (is_model_calc=1 模型决策) —— 与「有无配置」共同决定分支 */
         boolean isConfigured;
         BigDecimal growthRate;
         List<Map<String, Object>> termRatios;
@@ -254,7 +254,7 @@ public class NewBusinessEngine extends EngineBase {
      * </ol>
      *
      * <p><b>v2.1 分支判定</b>: {@code is_configured = (cfg_id != null) && (is_model_calc == 1)}
-     * —— 原 Java 只看 cfg_id != null, 会把「存量保持」节点误判为「模型测算」节点。</p>
+     * —— 原 Java 只看 cfg_id != null, 会把「存量求解」节点误判为「模型决策」节点。</p>
      */
     private List<NodeData> initNodesData(NamedParameterJdbcTemplate jdbc, List<Map<String, Object>> leafNodes,
                                           LocalDate baseDate, int monthCount) {
